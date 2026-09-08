@@ -544,6 +544,61 @@ void handleSaveConfig() {
   server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Configuracion guardada correctamente\"}");
 }
 
+void handleDeleteFile() {
+  if (!sdMounted && !tryMountSD()) {
+    server.send(400, "application/json", "{\"error\":\"MicroSD no disponible\"}");
+    return;
+  }
+  if (!server.hasArg("file")) {
+    server.send(400, "application/json", "{\"error\":\"Falta nombre de archivo\"}");
+    return;
+  }
+  String filename = server.arg("file");
+  if (!filename.startsWith("/")) filename = "/" + filename;
+
+  if (!SD_MMC.exists(filename)) {
+    server.send(404, "application/json", "{\"error\":\"Archivo no encontrado\"}");
+    return;
+  }
+  if (SD_MMC.remove(filename)) {
+    Serial.printf("🗑️ Archivo borrado de SD: %s\n", filename.c_str());
+    server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Archivo borrado\"}");
+  } else {
+    server.send(500, "application/json", "{\"error\":\"Error al borrar archivo\"}");
+  }
+}
+
+void handleRenameFile() {
+  if (!sdMounted && !tryMountSD()) {
+    server.send(400, "application/json", "{\"error\":\"MicroSD no disponible\"}");
+    return;
+  }
+  if (!server.hasArg("old") || !server.hasArg("new")) {
+    server.send(400, "application/json", "{\"error\":\"Faltan parametros old y new\"}");
+    return;
+  }
+  String oldName = server.arg("old");
+  String newName = server.arg("new");
+  if (!oldName.startsWith("/")) oldName = "/" + oldName;
+  if (!newName.startsWith("/")) newName = "/" + newName;
+  if (!newName.endsWith(".avi")) newName += ".avi";
+
+  if (!SD_MMC.exists(oldName)) {
+    server.send(404, "application/json", "{\"error\":\"Archivo original no existe\"}");
+    return;
+  }
+  if (SD_MMC.exists(newName)) {
+    server.send(409, "application/json", "{\"error\":\"Ya existe un archivo con ese nombre\"}");
+    return;
+  }
+  if (SD_MMC.rename(oldName, newName)) {
+    Serial.printf("✏️ Archivo renombrado en SD: %s -> %s\n", oldName.c_str(), newName.c_str());
+    server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Archivo renombrado\"}");
+  } else {
+    server.send(500, "application/json", "{\"error\":\"Fallo al renombrar archivo\"}");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -573,6 +628,8 @@ void setup() {
 
     server.on("/", HTTP_GET, handleRoot);
     server.on("/download", HTTP_GET, handleDownload);
+    server.on("/delete", HTTP_POST, handleDeleteFile);
+    server.on("/rename", HTTP_POST, handleRenameFile);
     server.on("/config", HTTP_GET, handleGetConfig);
     server.on("/config", HTTP_POST, handleSaveConfig);
     server.begin();
