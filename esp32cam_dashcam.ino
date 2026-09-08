@@ -26,7 +26,7 @@
 #define FLASH_LED_PIN      4    // Flash frontal (blanco)
 #define ONBOARD_LED_PIN   33    // LED rojo pequeño trasero (Activo en LOW)
 
-// Pines para el pulsador Wi-Fi (aceptamos IO13 o el pin IO3 / U0RX)
+// Pines para el pulsador Wi-Fi (aceptamos IO13 o el pin RX / IO3)
 #define BUTTON_PIN_13     13    
 #define BUTTON_PIN_3       3    
 
@@ -64,6 +64,18 @@ void blinkError(int times) {
     }
     delay(1000);
   }
+}
+
+// Intento de montaje seguro de la MicroSD
+bool tryMountSD() {
+  if (sdMounted) return true;
+  SD_MMC.setPins(14, 15, 2);
+  if (SD_MMC.begin("/sdcard", true)) {
+    sdMounted = true;
+    Serial.println("✅ MicroSD montada exitosamente");
+    return true;
+  }
+  return false;
 }
 
 // ================= GESTIÓN DEL ARCHIVO DASHCAM.CFG =================
@@ -157,7 +169,7 @@ void loadConfigFile() {
   frameIntervalMs = 1000 / cfg_fps;
 }
 
-// Escribe la cabecera estándar AVI para Motion-JPEG (224 bytes con strf/BITMAPINFOHEADER)
+// Escribe la cabecera estándar AVI para Motion-JPEG (224 bytes)
 static void writeAviHeader(File &file, int width, int height, int totalFrames, int fps) {
   uint32_t currentSize = file.size();
   uint32_t moviSize = (currentSize >= AVI_HEADER_SIZE) ? (currentSize - AVI_HEADER_SIZE) : (totalFrames * 15000);
@@ -172,7 +184,7 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
   
   // 2. LIST hdrl
   file.write((const uint8_t*)"LIST", 4);
-  uint32_t hdrlSize = 4 + 8 + 56 + 8 + (4 + 8 + 56 + 8 + 40); // 192 bytes
+  uint32_t hdrlSize = 4 + 8 + 56 + 8 + (4 + 8 + 56 + 8 + 40);
   file.write((const uint8_t*)&hdrlSize, 4);
   file.write((const uint8_t*)"hdrl", 4);
   
@@ -269,6 +281,11 @@ void checkStorageSpace() {
 
 // ================= MODO SERVIDOR WEB (DESCARGA WI-FI) =================
 void handleRoot() {
+  // Reintento dinámico de montaje por si se insertó la SD después de encender
+  if (!sdMounted) {
+    tryMountSD();
+  }
+
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<title>Dashcam - Descarga de Videos</title>";
@@ -277,11 +294,16 @@ void handleRoot() {
   html += "li{background:white;padding:12px;margin-bottom:8px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,0.1)}";
   html += "a.btn{background:#1a73e8;color:white;text-decoration:none;padding:8px 14px;border-radius:4px;font-weight:bold}";
   html += ".size{color:#777;font-size:0.9em;margin-left:10px}";
-  html += ".alert{background:#ffebee;color:#c62828;padding:12px;border-radius:6px;margin-bottom:15px}</style></head><body>";
+  html += ".alert{background:#ffebee;color:#c62828;padding:15px;border-radius:6px;margin-bottom:15px}";
+  html += ".retry-btn{display:inline-block;margin-top:10px;background:#d32f2f;color:white;padding:8px 16px;border-radius:4px;text-decoration:none;font-weight:bold}</style></head><body>";
   html += "<h1>🚗 Videos Grabados</h1>";
 
   if (!sdMounted) {
-    html += "<div class='alert'>⚠️ Tarjeta MicroSD no detectada. Inserta la tarjeta en la ranura y reinicia.</div>";
+    html += "<div class='alert'>";
+    html += "<strong>⚠️ Tarjeta MicroSD no detectada.</strong><br>";
+    html += "Asegúrate de que esté insertada hasta el fondo en la ranura.<br>";
+    html += "<a class='retry-btn' href='/'>🔄 Reintentar Detección</a>";
+    html += "</div>";
     html += "</body></html>";
     server.send(200, "text/html", html);
     return;
@@ -312,8 +334,12 @@ void handleRoot() {
 }
 
 void handleDownload() {
-  if (!sdMounted || !server.hasArg("file")) {
-    server.send(400, "text/plain", "Falta parametro de archivo o SD no montada");
+  if (!sdMounted && !tryMountSD()) {
+    server.send(400, "text/plain", "MicroSD no disponible");
+    return;
+  }
+  if (!server.hasArg("file")) {
+    server.send(400, "text/plain", "Falta parametro de archivo");
     return;
   }
   String filename = server.arg("file");
@@ -334,81 +360,63 @@ void handleDownload() {
 void setup() {
   Serial.begin(115200);
 
-  // Configuración de pines de diagnóstico
   pinMode(ONBOARD_LED_PIN, OUTPUT);
-  digitalWrite(ONBOARD_LED_PIN, HIGH); // Apagado
+  digitalWrite(ONBOARD_LED_PIN, HIGH);
   pinMode(FLASH_LED_PIN, OUTPUT);
-  digitalWrite(FLASH_LED_PIN, LOW);    // Flash apagado
+  digitalWrite(FLASH_LED_PIN, LOW);
 
-  // Configuramos ambos pines posibles para el pulsador Wi-Fi (IO13 y IO3/RX)
   pinMode(BUTTON_PIN_13, INPUT_PULLUP);
   pinMode(BUTTON_PIN_3, INPUT_PULLUP);
 
-  // Pequeña pausa para estabilizar tensiones
   delay(150);
 
-  // Comprobamos si el usuario puenteó/pulsó IO13 a GND O IO3 a GND
   bool requestedWifi = (digitalRead(BUTTON_PIN_13) == LOW || digitalRead(BUTTON_PIN_3) == LOW);
 
-  // ================= 1. PRIORIDAD MODO WI-FI =================
+  // ================= 1. MODO WI-FI =================
   if (requestedWifi) {
     wifiMode = true;
-    // ¡ENCENDER DE INMEDIATO EL LED ROJO TRASERO FIJO!
-    digitalWrite(ONBOARD_LED_PIN, LOW);
+    digitalWrite(ONBOARD_LED_PIN, LOW); // LED rojo fijo
 
-    Serial.println("\n==========================================");
-    Serial.println(">>> MODO WIFI ACTIVADO (PORTAL DE DESCARGA)");
-    Serial.println("==========================================");
-
+    Serial.println("\n>>> MODO WIFI ACTIVADO");
     WiFi.mode(WIFI_AP);
     WiFi.softAP("Dashcam-WiFi", "12345678");
 
-    // Intentamos montar la SD en segundo plano si está insertada
-    SD_MMC.setPins(14, 15, 2);
-    if (SD_MMC.begin("/sdcard", true, false, 20000)) {
-      sdMounted = true;
-      Serial.println("✅ MicroSD lista en modo Wi-Fi.");
-    } else {
-      Serial.println("⚠️ MicroSD no detectada.");
-    }
+    // Pequeña espera para que si el usuario usó IO13, no interfiera con DAT3
+    delay(500);
+
+    // Intentar montar la SD
+    tryMountSD();
 
     server.on("/", HTTP_GET, handleRoot);
     server.on("/download", HTTP_GET, handleDownload);
     server.begin();
 
-    Serial.println("📡 Red: Dashcam-WiFi (clave: 12345678)");
-    Serial.print("🌐 IP: http://");
-    Serial.println(WiFi.softAPIP());
-    return; // Sale de setup y se queda en servidor web
+    Serial.println("📡 Portal listo en http://192.168.4.1");
+    return;
   }
 
-  // ================= 2. MODO DASHCAM HABITUAL =================
+  // ================= 2. MODO DASHCAM NORMAL =================
   wifiMode = false;
   WiFi.mode(WIFI_OFF);
   btStop();
 
   setCpuFrequencyMhz(160);
 
-  // Montar MicroSD obligatoria para grabar
-  SD_MMC.setPins(14, 15, 2);
-  if (!SD_MMC.begin("/sdcard", true, false, 20000)) {
+  if (!tryMountSD()) {
     Serial.println("❌ ERROR: Fallo al montar MicroSD (¿Formateada en FAT32?)");
     blinkError(3);
     return;
   }
-  sdMounted = true;
 
   uint8_t cardType = SD_MMC.cardType();
   if (cardType == CARD_NONE) {
-    Serial.println("❌ ERROR: No se detecta tarjeta en la ranura MicroSD");
+    Serial.println("❌ ERROR: No se detecta tarjeta en la ranura");
     blinkError(4);
     return;
   }
 
-  // Cargar configuración de usuario desde /dashcam.cfg
   loadConfigFile();
 
-  // Buscar el siguiente archivo libre
   while (fileIndex < 9999) {
     char testPath[32];
     sprintf(testPath, "/dash_%04d.avi", fileIndex);
