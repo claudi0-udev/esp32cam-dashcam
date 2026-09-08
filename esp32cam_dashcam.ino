@@ -1,7 +1,6 @@
 #include "esp_camera.h"
 #include "FS.h"
 #include "SD_MMC.h"
-#include "driver/rtc_io.h"
 #include "WiFi.h"
 #include "WebServer.h"
 #include "esp_bt.h"
@@ -24,9 +23,9 @@
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
-#define FLASH_LED_PIN      4    // Flash frontal
-#define ONBOARD_LED_PIN   33    // LED rojo pequeño trasero (activo en LOW)
-#define BUTTON_PIN        13    // Pulsador a GND para modo Wi-Fi en el arranque
+#define FLASH_LED_PIN      4    // Flash frontal (blanco)
+#define ONBOARD_LED_PIN   33    // LED rojo pequeño trasero (Activo en LOW)
+#define BUTTON_PIN        13    // Pulsador a GND para modo Wi-Fi
 
 // ================= CONFIGURACIÓN DASHCAM =================
 const int FPS = 3;                       // 3 cuadros por segundo
@@ -39,6 +38,19 @@ int fileIndex = 0;
 bool wifiMode = false;
 WebServer server(80);
 
+// Señal luminosa de error (parpadeo rápido infinito en el LED rojo)
+void blinkError(int times) {
+  while (true) {
+    for (int i = 0; i < times; i++) {
+      digitalWrite(ONBOARD_LED_PIN, LOW);  // Encendido
+      delay(150);
+      digitalWrite(ONBOARD_LED_PIN, HIGH); // Apagado
+      delay(150);
+    }
+    delay(1000);
+  }
+}
+
 // Escribe la cabecera estándar AVI para Motion-JPEG (176 bytes)
 static void writeAviHeader(File &file, int width, int height, int totalFrames, int fps) {
   uint32_t currentSize = file.size();
@@ -47,18 +59,15 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
 
   file.seek(0);
   
-  // RIFF chunk
   file.write((const uint8_t*)"RIFF", 4);
   file.write((const uint8_t*)&riffSize, 4);
   file.write((const uint8_t*)"AVI ", 4);
   
-  // LIST hdrl
   file.write((const uint8_t*)"LIST", 4);
   uint32_t hdrlSize = 4 + 8 + 56 + 8 + 4 + 8 + 56;
   file.write((const uint8_t*)&hdrlSize, 4);
   file.write((const uint8_t*)"hdrl", 4);
   
-  // avih chunk
   file.write((const uint8_t*)"avih", 4);
   uint32_t avihSize = 56;
   file.write((const uint8_t*)&avihSize, 4);
@@ -76,13 +85,11 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
   uint32_t reserved[4] = {0, 0, 0, 0};
   file.write((const uint8_t*)reserved, 16);
   
-  // LIST strl
   file.write((const uint8_t*)"LIST", 4);
   uint32_t strlSize = 4 + 8 + 56;
   file.write((const uint8_t*)&strlSize, 4);
   file.write((const uint8_t*)"strl", 4);
   
-  // strh chunk
   file.write((const uint8_t*)"strh", 4);
   uint32_t strhSize = 56;
   file.write((const uint8_t*)&strhSize, 4);
@@ -101,7 +108,6 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
   int16_t rcFrame[4] = {0, 0, (int16_t)width, (int16_t)height};
   file.write((const uint8_t*)rcFrame, 8);
   
-  // LIST movi
   file.write((const uint8_t*)"LIST", 4);
   file.write((const uint8_t*)&moviSize, 4);
   file.write((const uint8_t*)"movi", 4);
@@ -111,21 +117,23 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
 void checkStorageSpace() {
   uint64_t totalBytes = SD_MMC.totalBytes();
   uint64_t usedBytes = SD_MMC.usedBytes();
-  uint64_t freeBytes = totalBytes - usedBytes;
-
-  if (freeBytes < 100 * 1024 * 1024) {
-    File root = SD_MMC.open("/");
-    File file = root.openNextFile();
-    if (file) {
-      String oldestFile = file.name();
-      file.close();
-      root.close();
-      if (oldestFile.endsWith(".avi")) {
-        SD_MMC.remove("/" + oldestFile);
-        Serial.printf("[LOOP] Borrado video antiguo: /%s\n", oldestFile.c_str());
+  if (totalBytes > 0 && totalBytes > usedBytes) {
+    uint64_t freeBytes = totalBytes - usedBytes;
+    if (freeBytes < 100 * 1024 * 1024) {
+      File root = SD_MMC.open("/");
+      File file = root.openNextFile();
+      if (file) {
+        String oldestFile = file.name();
+        file.close();
+        root.close();
+        if (oldestFile.endsWith(".avi")) {
+          if (!oldestFile.startsWith("/")) oldestFile = "/" + oldestFile;
+          SD_MMC.remove(oldestFile);
+          Serial.printf("[LOOP] Borrado video antiguo: %s\n", oldestFile.c_str());
+        }
+      } else {
+        root.close();
       }
-    } else {
-      root.close();
     }
   }
 }
@@ -187,30 +195,41 @@ void handleDownload() {
 
 void setup() {
   Serial.begin(115200);
+  delay(500);
+  Serial.println("\n--- ESP32-CAM Dashcam Iniciando ---");
 
-  // 1. Configurar pin del pulsador con resistencia Pull-Up interna
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  // Configuración de LEDs
   pinMode(ONBOARD_LED_PIN, OUTPUT);
-  digitalWrite(ONBOARD_LED_PIN, HIGH); // Apagado
-
-  // 2. Apagar Flash frontal potente para que no consuma
+  digitalWrite(ONBOARD_LED_PIN, HIGH); // Apagado inicial
   pinMode(FLASH_LED_PIN, OUTPUT);
-  digitalWrite(FLASH_LED_PIN, LOW);
-  rtc_gpio_hold_en((gpio_num_t)FLASH_LED_PIN);
+  digitalWrite(FLASH_LED_PIN, LOW);    // Flash frontal apagado
 
-  // 3. Montar MicroSD en modo 1-Bit (libera GPIO 13 y GPIO 4)
-  if (!SD_MMC.begin("/sdcard", true)) {
-    Serial.println("Fallo al montar SD_MMC");
+  // 1. Configurar pulsador
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  bool requestedWifi = (digitalRead(BUTTON_PIN) == LOW);
+
+  // 2. Iniciar MicroSD en modo 1-Bit (CLK=14, CMD=15, D0=2)
+  SD_MMC.setPins(14, 15, 2);
+  if (!SD_MMC.begin("/sdcard", true, false, 20000)) {
+    Serial.println("❌ ERROR: Fallo al montar MicroSD (¿Formateada en FAT32?)");
+    // Parpadeo de error: 3 destellos rápidos continuos = ERROR SD
+    blinkError(3);
     return;
   }
 
-  // 4. VERIFICAR PULSADOR EN EL ARRANQUE
-  if (digitalRead(BUTTON_PIN) == LOW) {
+  uint8_t cardType = SD_MMC.cardType();
+  if (cardType == CARD_NONE) {
+    Serial.println("❌ ERROR: No se detecta tarjeta en la ranura MicroSD");
+    blinkError(4);
+    return;
+  }
+  Serial.printf("✅ MicroSD detectada correctamente. Capacidad: %llu MB\n", SD_MMC.cardSize() / (1024 * 1024));
+
+  // 3. MODO WI-FI SI SE MANTUVO EL PULSADOR
+  if (requestedWifi) {
     wifiMode = true;
-    digitalWrite(ONBOARD_LED_PIN, LOW); // Enciende el LED rojo indicador
-    Serial.println("\n==========================================");
-    Serial.println(">>> MODO WIFI ACTIVADO (DESCARGA DE ARCHIVOS)");
-    Serial.println("==========================================");
+    digitalWrite(ONBOARD_LED_PIN, LOW); // LED rojo encendido fijo
+    Serial.println(">>> MODO WIFI ACTIVADO");
 
     WiFi.mode(WIFI_AP);
     WiFi.softAP("Dashcam-WiFi", "12345678");
@@ -219,18 +238,29 @@ void setup() {
     server.on("/download", HTTP_GET, handleDownload);
     server.begin();
 
-    Serial.print("Conectate a la red WiFi: Dashcam-WiFi (clave: 12345678)\n");
-    Serial.print("Abre en el navegador: http://");
+    Serial.print("Conectate a 'Dashcam-WiFi' y entra a http://");
     Serial.println(WiFi.softAPIP());
     return;
   }
 
-  // ================= MODO DASHCAM NORMAL (GRABACIÓN) =================
+  // 4. MODO GRABACIÓN NORMAL
   wifiMode = false;
   WiFi.mode(WIFI_OFF);
   btStop();
 
   setCpuFrequencyMhz(160);
+
+  // Buscar el siguiente nombre de archivo disponible (para no sobrescribir)
+  while (fileIndex < 9999) {
+    char testPath[32];
+    sprintf(testPath, "/dash_%04d.avi", fileIndex);
+    if (SD_MMC.exists(testPath)) {
+      fileIndex++;
+    } else {
+      break;
+    }
+  }
+  Serial.printf("Siguiente archivo a grabar: /dash_%04d.avi\n", fileIndex);
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -261,11 +291,13 @@ void setup() {
   config.fb_count = 2;
 
   if (esp_camera_init(&config) != ESP_OK) {
-    Serial.println("Error al iniciar cámara");
+    Serial.println("❌ ERROR al iniciar la cámara OV2640");
+    // Parpadeo de error: 2 destellos = ERROR CÁMARA
+    blinkError(2);
     return;
   }
 
-  Serial.println("Modo Dashcam listo. Grabando a 3 FPS...");
+  Serial.println("📹 Grabando clips a 3 FPS...");
 }
 
 void recordClip() {
@@ -275,28 +307,26 @@ void recordClip() {
   sprintf(filename, "/dash_%04d.avi", fileIndex++);
   File aviFile = SD_MMC.open(filename, FILE_WRITE);
   if (!aviFile) {
-    Serial.println("No se pudo crear archivo AVI");
+    Serial.printf("❌ Error al abrir %s para escritura\n", filename);
+    delay(1000);
     return;
   }
 
-  // 1. ESCRIBIR CABECERA AVI VÁLIDA DESDE EL SEGUNDO 0
-  // Esto protege el archivo contra cortes bruscos de energía
   writeAviHeader(aviFile, 640, 480, FRAMES_PER_CLIP, FPS);
-  aviFile.seek(AVI_HEADER_SIZE); // Posicionar al inicio del chunk movi
+  aviFile.seek(AVI_HEADER_SIZE);
 
   int framesWritten = 0;
-  Serial.printf("[REC] Iniciando clip: %s\n", filename);
+  Serial.printf("[REC] Grabando: %s\n", filename);
 
   for (int i = 0; i < FRAMES_PER_CLIP; i++) {
     unsigned long startMs = millis();
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
-      Serial.println("Error al capturar frame");
+      Serial.println("Error frame");
       continue;
     }
 
-    // Escribir chunk de imagen MJPEG: "00dc" + tamaño
     aviFile.write((const uint8_t*)"00dc", 4);
     uint32_t frameSize = fb->len;
     aviFile.write((const uint8_t*)&frameSize, 4);
@@ -310,10 +340,13 @@ void recordClip() {
     esp_camera_fb_return(fb);
     framesWritten++;
 
-    // 2. FLUSH INMEDIATO A LA MICROSD
-    // Actualiza la tabla FAT y asienta los datos en la flash en cada cuadro.
-    // Si se corta la energía de golpe, el archivo conserva todos los segundos grabados.
+    // Asentar en la SD físicamente
     aviFile.flush();
+
+    // Pequeño parpadeo indicador de actividad cada frame
+    digitalWrite(ONBOARD_LED_PIN, LOW);
+    delay(20);
+    digitalWrite(ONBOARD_LED_PIN, HIGH);
 
     unsigned long elapsed = millis() - startMs;
     if (elapsed < FRAME_INTERVAL_MS) {
@@ -321,10 +354,9 @@ void recordClip() {
     }
   }
 
-  // 3. ACTUALIZAR CABECERA FINAL CON EL CONTEO EXACTO DE CUADROS
   writeAviHeader(aviFile, 640, 480, framesWritten, FPS);
   aviFile.close();
-  Serial.printf("[REC] Clip finalizado (%d frames guardados)\n", framesWritten);
+  Serial.printf("[REC] Clip guardado: %s (%d frames)\n", filename, framesWritten);
 }
 
 void loop() {
