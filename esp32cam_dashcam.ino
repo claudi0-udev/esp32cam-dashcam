@@ -5,6 +5,7 @@
 #include "WebServer.h"
 #include "esp_bt.h"
 #include <Update.h>
+#include <StreamString.h>
 #include <vector>
 #include <algorithm>
 
@@ -638,7 +639,13 @@ void handleVersion() {
 void handleOtaResponse() {
   server.sendHeader("Connection", "close");
   if (Update.hasError()) {
-    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Fallo en la verificacion del firmware\"}");
+    StreamString ss;
+    Update.printError(ss);
+    String msg = ss.c_str();
+    msg.trim();
+    if (msg.length() == 0) msg = "Fallo en la verificacion (Codigo " + String(Update.getError()) + ")";
+    Serial.printf("[OTA] Error: %s\n", msg.c_str());
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"" + msg + "\"}");
   } else {
     server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Firmware actualizado. Reiniciando...\"}");
     delay(500);
