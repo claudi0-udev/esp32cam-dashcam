@@ -366,4 +366,46 @@ object DashcamClient {
             Result.failure(e)
         }
     }
+
+    /**
+     * Queries current camera firmware version via /version or /config.
+     */
+    suspend fun getFirmwareVersion(baseUrl: String = DEFAULT_BASE_URL): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val versionUrl = URL("$baseUrl/version")
+            val conn = (versionUrl.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 3000
+                readTimeout = 3000
+                requestMethod = "GET"
+            }
+            val code = conn.responseCode
+            if (code == 200) {
+                val txt = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
+                conn.disconnect()
+                val json = JSONObject(txt)
+                val ver = json.optString("version", "")
+                if (ver.isNotBlank()) return@withContext Result.success(ver)
+            } else {
+                conn.disconnect()
+            }
+
+            val cfgUrl = URL("$baseUrl/config")
+            val cfgConn = (cfgUrl.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 3000
+                readTimeout = 3000
+                requestMethod = "GET"
+            }
+            if (cfgConn.responseCode == 200) {
+                val txt = BufferedReader(InputStreamReader(cfgConn.inputStream)).use { it.readText() }
+                cfgConn.disconnect()
+                val json = JSONObject(txt)
+                val ver = json.optString("firmware_version", "1.0.0")
+                return@withContext Result.success(ver)
+            }
+            cfgConn.disconnect()
+            Result.success("1.0.0")
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

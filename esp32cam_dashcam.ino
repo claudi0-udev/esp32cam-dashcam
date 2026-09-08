@@ -8,6 +8,8 @@
 #include <vector>
 #include <algorithm>
 
+#define FIRMWARE_VERSION  "1.1.0"
+
 // ================= PINES ESP32-CAM (AI-THINKER) =================
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -527,7 +529,8 @@ void handleGetConfig() {
   json += "\"brightness\":" + String(cfg_brightness) + ",";
   json += "\"contrast\":" + String(cfg_contrast) + ",";
   json += "\"saturation\":" + String(cfg_saturation) + ",";
-  json += "\"wb_mode\":" + String(cfg_wb_mode);
+  json += "\"wb_mode\":" + String(cfg_wb_mode) + ",";
+  json += "\"firmware_version\":\"" FIRMWARE_VERSION "\"";
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -625,6 +628,12 @@ void handleRenameFile() {
   }
 }
 
+// Devuelve la versión y estado del firmware
+void handleVersion() {
+  server.sendHeader("Connection", "close");
+  server.send(200, "application/json", "{\"status\":\"ok\",\"version\":\"" FIRMWARE_VERSION "\",\"model\":\"ESP32-CAM-DASHCAM\"}");
+}
+
 // Manejador de actualización de firmware por Wi-Fi (OTA)
 void handleOtaResponse() {
   server.sendHeader("Connection", "close");
@@ -694,6 +703,8 @@ void setup() {
     server.on("/rename", HTTP_POST, handleRenameFile);
     server.on("/config", HTTP_GET, handleGetConfig);
     server.on("/config", HTTP_POST, handleSaveConfig);
+    server.on("/version", HTTP_GET, handleVersion);
+    server.on("/status", HTTP_GET, handleVersion);
     server.on("/update", HTTP_POST, handleOtaResponse, handleOtaUpload);
     server.begin();
 

@@ -213,7 +213,10 @@ fun MainScreen(
                         selectedTab = 2
                         if (uiState.isConnected) viewModel.fetchCameraConfig()
                     },
-                    text = { Text("⚙️ Ajustes", fontSize = 13.sp) }
+                    text = {
+                        val hasUpdate = uiState.isAppUpdateAvailable || (uiState.isConnected && uiState.isFirmwareUpdateAvailable)
+                        Text(if (hasUpdate) "⚙️ Ajustes 🔴" else "⚙️ Ajustes", fontSize = 13.sp)
+                    }
                 )
             }
 
@@ -256,8 +259,20 @@ fun MainScreen(
                     isUpdatingFirmware = uiState.isUpdatingFirmware,
                     otaProgress = uiState.otaProgress,
                     otaStatus = uiState.otaStatus,
+                    cameraFirmwareVersion = uiState.cameraFirmwareVersion,
+                    isCheckingUpdates = uiState.isCheckingUpdates,
+                    latestRelease = uiState.latestRelease,
+                    isAppUpdateAvailable = uiState.isAppUpdateAvailable,
+                    isFirmwareUpdateAvailable = uiState.isFirmwareUpdateAvailable,
+                    cachedFirmwareVersion = uiState.cachedFirmwareVersion,
+                    isDownloadingAppUpdate = uiState.isDownloadingAppUpdate,
+                    appUpdateProgress = uiState.appUpdateProgress,
+                    isCachingFirmware = uiState.isCachingFirmware,
                     onSaveConfig = { newConfig -> viewModel.saveCameraConfig(newConfig) },
                     onRefreshConfig = { viewModel.fetchCameraConfig() },
+                    onCheckForUpdates = { viewModel.checkForUpdates(silent = false) },
+                    onUpdateApp = { viewModel.downloadAndInstallAppUpdate() },
+                    onInstallCachedFirmware = { viewModel.installCachedFirmwareToCamera() },
                     onUpdateFirmwareUri = { uri -> viewModel.updateFirmwareFromUri(uri) },
                     onUpdateFirmwareFromGitHub = { viewModel.downloadAndInstallFirmwareFromGitHub() }
                 )

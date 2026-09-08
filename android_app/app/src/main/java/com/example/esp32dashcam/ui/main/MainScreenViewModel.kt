@@ -3,9 +3,12 @@ package com.example.esp32dashcam.ui.main
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.esp32dashcam.BuildConfig
 import com.example.esp32dashcam.network.DashcamClient
 import com.example.esp32dashcam.network.DashcamConfig
+import com.example.esp32dashcam.network.GitHubRelease
 import com.example.esp32dashcam.network.RemoteVideo
+import com.example.esp32dashcam.network.UpdateManager
 import com.example.esp32dashcam.utils.AviMerger
 import com.example.esp32dashcam.wifi.WifiManagerHelper
 import kotlinx.coroutines.delay
@@ -43,6 +46,16 @@ data class MainUiState(
     val isUpdatingFirmware: Boolean = false,
     val otaProgress: Float = 0f,
     val otaStatus: String = "",
+    val cameraFirmwareVersion: String = "1.0.0",
+    val isCheckingUpdates: Boolean = false,
+    val latestRelease: GitHubRelease? = null,
+    val isAppUpdateAvailable: Boolean = false,
+    val isFirmwareUpdateAvailable: Boolean = false,
+    val cachedFirmwareVersion: String? = null,
+    val isDownloadingAppUpdate: Boolean = false,
+    val appUpdateProgress: Float = 0f,
+    val isCachingFirmware: Boolean = false,
+    val cachingFirmwareProgress: Float = 0f,
     val errorMessage: String? = null,
     val successMessage: String? = null
 )
@@ -63,6 +76,8 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
 
     init {
         loadLocalVideos()
+        loadCachedFirmwareInfo()
+        checkForUpdates(silent = true)
         checkConnectionAndRefresh()
     }
 
@@ -106,6 +121,19 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
             _uiState.value = _uiState.value.copy(isRefreshing = true, errorMessage = null)
             val connected = DashcamClient.checkConnection()
             if (connected) {
+                // Fetch camera firmware version
+                val verRes = DashcamClient.getFirmwareVersion()
+                val fwVer = verRes.getOrDefault("1.0.0")
+                val cached = _uiState.value.cachedFirmwareVersion
+                val release = _uiState.value.latestRelease
+                val hasFwUpdate = (release != null && UpdateManager.isNewerVersion(release.version, fwVer)) ||
+                                 (cached != null && UpdateManager.isNewerVersion(cached, fwVer))
+
+                _uiState.value = _uiState.value.copy(
+                    cameraFirmwareVersion = fwVer,
+                    isFirmwareUpdateAvailable = hasFwUpdate
+                )
+
                 val listResult = DashcamClient.fetchVideoList()
                 listResult.fold(
                     onSuccess = { list ->
@@ -535,5 +563,132 @@ class MainScreenViewModel(application: Application) : AndroidViewModel(applicati
                 }
             )
         }
+    }
+
+    fun loadCachedFirmwareInfo() {
+        val cachedVer = UpdateManager.getCachedFirmwareVersion(getApplication())
+        _uiState.value = _uiState.value.copy(cachedFirmwareVersion = cachedVer)
+    }
+
+    fun checkForUpdates(silent: Boolean = false) {
+        viewModelScope.launch {
+            if (!silent) {
+                _uiState.value = _uiState.value.copy(isCheckingUpdates = true)
+            }
+            val res = UpdateManager.fetchLatestRelease()
+            res.fold(
+                onSuccess = { release ->
+                    val appVer = BuildConfig.VERSION_NAME
+                    val appHasUpdate = UpdateManager.isNewerVersion(release.version, appVer) && release.apkAsset != null
+                    val fwVer = _uiState.value.cameraFirmwareVersion
+                    val fwHasUpdate = (UpdateManager.isNewerVersion(release.version, fwVer) ||
+                                      (_uiState.value.cachedFirmwareVersion != null &&
+                                       UpdateManager.isNewerVersion(_uiState.value.cachedFirmwareVersion!!, fwVer))) &&
+                                      release.firmwareAsset != null
+
+                    _uiState.value = _uiState.value.copy(
+                        isCheckingUpdates = false,
+                        latestRelease = release,
+                        isAppUpdateAvailable = appHasUpdate,
+                        isFirmwareUpdateAvailable = fwHasUpdate
+                    )
+
+                    // Background download the new firmware binary if online and newer than cached
+                    val cachedVer = _uiState.value.cachedFirmwareVersion
+                    if (release.firmwareAsset != null && (cachedVer == null || UpdateManager.isNewerVersion(release.version, cachedVer))) {
+                        cacheFirmwareInBackground(release)
+                    }
+
+                    if (!silent) {
+                        if (appHasUpdate && fwHasUpdate) {
+                            _uiState.value = _uiState.value.copy(
+                                successMessage = "¡Hay actualizaciones disponibles para la App y la Cámara! (${release.tagName})"
+                            )
+                        } else if (appHasUpdate) {
+                            _uiState.value = _uiState.value.copy(
+                                successMessage = "¡Nueva versión de la App disponible! (${release.tagName})"
+                            )
+                        } else if (fwHasUpdate) {
+                            _uiState.value = _uiState.value.copy(
+                                successMessage = "¡Nueva versión de firmware para la Cámara! (${release.tagName})"
+                            )
+                        } else {
+                            _uiState.value = _uiState.value.copy(
+                                successMessage = "Todo está al día. App: v$appVer | Cámara: v$fwVer"
+                            )
+                        }
+                    }
+                },
+                onFailure = { err ->
+                    _uiState.value = _uiState.value.copy(isCheckingUpdates = false)
+                    if (!silent) {
+                        _uiState.value = _uiState.value.copy(
+                            errorMessage = "No se pudieron buscar actualizaciones: ${err.message}"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    private fun cacheFirmwareInBackground(release: GitHubRelease) {
+        val asset = release.firmwareAsset ?: return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isCachingFirmware = true, cachingFirmwareProgress = 0f)
+            val res = UpdateManager.cacheFirmware(getApplication(), asset, release.version) { prog ->
+                _uiState.value = _uiState.value.copy(cachingFirmwareProgress = prog)
+            }
+            res.fold(
+                onSuccess = {
+                    val cachedVer = UpdateManager.getCachedFirmwareVersion(getApplication())
+                    _uiState.value = _uiState.value.copy(
+                        isCachingFirmware = false,
+                        cachedFirmwareVersion = cachedVer
+                    )
+                },
+                onFailure = {
+                    _uiState.value = _uiState.value.copy(isCachingFirmware = false)
+                }
+            )
+        }
+    }
+
+    fun downloadAndInstallAppUpdate() {
+        val release = _uiState.value.latestRelease ?: return
+        val apkAsset = release.apkAsset ?: return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isDownloadingAppUpdate = true,
+                appUpdateProgress = 0f
+            )
+            val res = UpdateManager.downloadApk(getApplication(), apkAsset) { prog ->
+                _uiState.value = _uiState.value.copy(appUpdateProgress = prog)
+            }
+            res.fold(
+                onSuccess = { apkFile ->
+                    _uiState.value = _uiState.value.copy(
+                        isDownloadingAppUpdate = false,
+                        appUpdateProgress = 1f,
+                        successMessage = "Descarga completa. Abriendo instalador..."
+                    )
+                    UpdateManager.installApk(getApplication(), apkFile)
+                },
+                onFailure = { err ->
+                    _uiState.value = _uiState.value.copy(
+                        isDownloadingAppUpdate = false,
+                        errorMessage = "Error descargando actualización de la app: ${err.message}"
+                    )
+                }
+            )
+        }
+    }
+
+    fun installCachedFirmwareToCamera() {
+        val bytes = UpdateManager.getCachedFirmwareBytes(getApplication())
+        if (bytes == null || bytes.isEmpty()) {
+            _uiState.value = _uiState.value.copy(errorMessage = "No hay firmware descargado en la memoria del teléfono")
+            return
+        }
+        updateFirmware(bytes)
     }
 }

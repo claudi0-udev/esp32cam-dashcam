@@ -3,4 +3,6 @@
     <external-files-path name="dashcam_videos" path="videos/" />
     <external-path name="dashcam_external" path="Movies/Dashcam/" />
     <cache-path name="dashcam_cache" path="videos/" />
+    <cache-path name="dashcam_updates" path="updates/" />
+    <external-cache-path name="dashcam_ext_updates" path="updates/" />
 </paths>

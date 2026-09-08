@@ -3,8 +3,11 @@ package com.example.esp32dashcam.ui.config
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -14,7 +17,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.esp32dashcam.BuildConfig
 import com.example.esp32dashcam.network.DashcamConfig
+import com.example.esp32dashcam.network.GitHubRelease
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -26,8 +31,20 @@ fun ConfigTabContent(
     isUpdatingFirmware: Boolean = false,
     otaProgress: Float = 0f,
     otaStatus: String = "",
+    cameraFirmwareVersion: String = "1.0.0",
+    isCheckingUpdates: Boolean = false,
+    latestRelease: GitHubRelease? = null,
+    isAppUpdateAvailable: Boolean = false,
+    isFirmwareUpdateAvailable: Boolean = false,
+    cachedFirmwareVersion: String? = null,
+    isDownloadingAppUpdate: Boolean = false,
+    appUpdateProgress: Float = 0f,
+    isCachingFirmware: Boolean = false,
     onSaveConfig: (DashcamConfig) -> Unit,
     onRefreshConfig: () -> Unit,
+    onCheckForUpdates: () -> Unit = {},
+    onUpdateApp: () -> Unit = {},
+    onInstallCachedFirmware: () -> Unit = {},
     onUpdateFirmwareUri: (Uri) -> Unit = {},
     onUpdateFirmwareFromGitHub: () -> Unit = {}
 ) {
@@ -314,29 +331,128 @@ fun ConfigTabContent(
 
         Spacer(modifier = Modifier.height(28.dp))
 
-        // Section 4: Firmware OTA
-        Text(
-            "🚀 Actualización de Firmware (OTA)",
-            fontWeight = FontWeight.Bold,
-            fontSize = 17.sp,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Spacer(modifier = Modifier.height(8.dp))
+        // Section 4: Software and Firmware Updates
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "🚀 Actualizaciones",
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+            IconButton(onClick = onCheckForUpdates, enabled = !isCheckingUpdates) {
+                if (isCheckingUpdates) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("🔄", fontSize = 16.sp)
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
 
+        // Estado de versiones
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("📱 App Android: v${BuildConfig.VERSION_NAME}", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    text = if (isConnected) "📷 Firmware Dashcam: v$cameraFirmwareVersion" else "📷 Firmware Dashcam: (Conecta a Dashcam-WiFi para ver)",
+                    fontSize = 13.sp,
+                    color = if (isConnected) MaterialTheme.colorScheme.onSurface else Color.Gray
+                )
+                if (cachedFirmwareVersion != null) {
+                    Text("💾 Firmware en memoria del teléfono: v$cachedFirmwareVersion", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Actualización de App Android
+        if (isAppUpdateAvailable) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF8E1)),
+                border = BorderStroke(1.dp, Color(0xFFFFA000)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("✨ Nueva versión de la App disponible: ${latestRelease?.tagName}", fontWeight = FontWeight.Bold, color = Color(0xFFE65100))
+                    if (!latestRelease?.notes.isNullOrBlank()) {
+                        Text(
+                            text = latestRelease!!.notes.take(160) + if (latestRelease.notes.length > 160) "..." else "",
+                            fontSize = 12.sp,
+                            color = Color.DarkGray,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (isDownloadingAppUpdate) {
+                        LinearProgressIndicator(progress = { appUpdateProgress }, modifier = Modifier.fillMaxWidth().height(6.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Descargando actualización: ${(appUpdateProgress * 100).toInt()}%", fontSize = 12.sp)
+                    } else {
+                        Button(
+                            onClick = onUpdateApp,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFA000)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("📲 Descargar e Instalar App", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        // Actualización de Firmware
+        if (isFirmwareUpdateAvailable || (cachedFirmwareVersion != null && isConnected && cameraFirmwareVersion != cachedFirmwareVersion)) {
+            val fwVersionTarget = latestRelease?.tagName ?: "v$cachedFirmwareVersion"
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9)),
+                border = BorderStroke(1.dp, Color(0xFF43A047)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("⚡ Nuevo Firmware para la Dashcam ($fwVersionTarget)", fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20))
+                    Text(
+                        text = if (cachedFirmwareVersion != null) "El binario ya está descargado en tu teléfono. Puedes flashearlo por Wi-Fi de inmediato."
+                               else "Se descargará de GitHub y se instalará por Wi-Fi en la Dashcam.",
+                        fontSize = 12.sp,
+                        color = Color.DarkGray,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            if (cachedFirmwareVersion != null) {
+                                onInstallCachedFirmware()
+                            } else {
+                                onUpdateFirmwareFromGitHub()
+                            }
+                        },
+                        enabled = isConnected && !isUpdatingFirmware,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("🚀 Instalar Firmware en Dashcam (OTA)", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        // Card general de flasheo OTA / opciones manuales
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    "Actualiza el software del ESP32-CAM de forma inalámbrica a través de Wi-Fi, sin necesidad de cables ni desmontar la cámara.",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(14.dp))
-
                 if (isUpdatingFirmware) {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
@@ -364,6 +480,15 @@ fun ConfigTabContent(
                         )
                     }
                 } else {
+                    Text("Opciones Manuales de Firmware", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Puedes flashear un archivo .bin guardado en tu móvil o descargar directamente de GitHub.",
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
                     val filePickerLauncher = rememberLauncherForActivityResult(
                         contract = ActivityResultContracts.GetContent()
                     ) { uri: Uri? ->
@@ -389,7 +514,7 @@ fun ConfigTabContent(
                             onClick = { showGitHubConfirmDialog = true },
                             enabled = isConnected,
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
                         ) {
                             Text("🌐 Desde GitHub", fontSize = 12.sp)
                         }
