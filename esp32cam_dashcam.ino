@@ -32,42 +32,45 @@ const int FPS = 3;                       // 3 cuadros por segundo
 const int CLIP_DURATION_SEC = 60;        // Duración de cada video (60 seg = 180 frames)
 const int FRAMES_PER_CLIP = FPS * CLIP_DURATION_SEC;
 const unsigned long FRAME_INTERVAL_MS = 1000 / FPS;
-const size_t AVI_HEADER_SIZE = 176;
+const size_t AVI_HEADER_SIZE = 224;      // Cabecera AVI estándar con BITMAPINFOHEADER
 
 int fileIndex = 0;
 bool wifiMode = false;
 WebServer server(80);
 
-// Señal luminosa de error (parpadeo rápido infinito en el LED rojo)
+// Señal luminosa de error (parpadeo rápido en el LED rojo)
 void blinkError(int times) {
   while (true) {
     for (int i = 0; i < times; i++) {
-      digitalWrite(ONBOARD_LED_PIN, LOW);  // Encendido
+      digitalWrite(ONBOARD_LED_PIN, LOW);
       delay(150);
-      digitalWrite(ONBOARD_LED_PIN, HIGH); // Apagado
+      digitalWrite(ONBOARD_LED_PIN, HIGH);
       delay(150);
     }
     delay(1000);
   }
 }
 
-// Escribe la cabecera estándar AVI para Motion-JPEG (176 bytes)
+// Escribe la cabecera estándar AVI para Motion-JPEG (224 bytes con strf/BITMAPINFOHEADER)
 static void writeAviHeader(File &file, int width, int height, int totalFrames, int fps) {
   uint32_t currentSize = file.size();
-  uint32_t moviSize = (currentSize >= AVI_HEADER_SIZE) ? (currentSize - AVI_HEADER_SIZE) : (totalFrames * 30000);
+  uint32_t moviSize = (currentSize >= AVI_HEADER_SIZE) ? (currentSize - AVI_HEADER_SIZE) : (totalFrames * 15000);
   uint32_t riffSize = moviSize + AVI_HEADER_SIZE - 8;
 
   file.seek(0);
   
+  // 1. RIFF chunk
   file.write((const uint8_t*)"RIFF", 4);
   file.write((const uint8_t*)&riffSize, 4);
   file.write((const uint8_t*)"AVI ", 4);
   
+  // 2. LIST hdrl
   file.write((const uint8_t*)"LIST", 4);
-  uint32_t hdrlSize = 4 + 8 + 56 + 8 + 4 + 8 + 56;
+  uint32_t hdrlSize = 4 + 8 + 56 + 8 + (4 + 8 + 56 + 8 + 40); // 192 bytes
   file.write((const uint8_t*)&hdrlSize, 4);
   file.write((const uint8_t*)"hdrl", 4);
   
+  // 2.1. avih chunk (56 bytes)
   file.write((const uint8_t*)"avih", 4);
   uint32_t avihSize = 56;
   file.write((const uint8_t*)&avihSize, 4);
@@ -85,11 +88,13 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
   uint32_t reserved[4] = {0, 0, 0, 0};
   file.write((const uint8_t*)reserved, 16);
   
+  // 2.2. LIST strl (116 bytes)
   file.write((const uint8_t*)"LIST", 4);
-  uint32_t strlSize = 4 + 8 + 56;
+  uint32_t strlSize = 4 + 8 + 56 + 8 + 40;
   file.write((const uint8_t*)&strlSize, 4);
   file.write((const uint8_t*)"strl", 4);
   
+  // 2.2.1. strh chunk (56 bytes)
   file.write((const uint8_t*)"strh", 4);
   uint32_t strhSize = 56;
   file.write((const uint8_t*)&strhSize, 4);
@@ -108,6 +113,23 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
   int16_t rcFrame[4] = {0, 0, (int16_t)width, (int16_t)height};
   file.write((const uint8_t*)rcFrame, 8);
   
+  // 2.2.2. strf chunk (40 bytes BITMAPINFOHEADER) - ¡Esencial para VLC y otros reproductores!
+  file.write((const uint8_t*)"strf", 4);
+  uint32_t strfSize = 40;
+  file.write((const uint8_t*)&strfSize, 4);
+  uint32_t biSize = 40; file.write((const uint8_t*)&biSize, 4);
+  int32_t biWidth = width; file.write((const uint8_t*)&biWidth, 4);
+  int32_t biHeight = height; file.write((const uint8_t*)&biHeight, 4);
+  uint16_t biPlanes = 1; file.write((const uint8_t*)&biPlanes, 2);
+  uint16_t biBitCount = 24; file.write((const uint8_t*)&biBitCount, 2);
+  file.write((const uint8_t*)"MJPG", 4);
+  uint32_t biSizeImage = width * height * 3; file.write((const uint8_t*)&biSizeImage, 4);
+  int32_t biXPelsPerMeter = 0; file.write((const uint8_t*)&biXPelsPerMeter, 4);
+  int32_t biYPelsPerMeter = 0; file.write((const uint8_t*)&biYPelsPerMeter, 4);
+  uint32_t biClrUsed = 0; file.write((const uint8_t*)&biClrUsed, 4);
+  uint32_t biClrImportant = 0; file.write((const uint8_t*)&biClrImportant, 4);
+  
+  // 3. LIST movi
   file.write((const uint8_t*)"LIST", 4);
   file.write((const uint8_t*)&moviSize, 4);
   file.write((const uint8_t*)"movi", 4);
@@ -200,9 +222,9 @@ void setup() {
 
   // Configuración de LEDs
   pinMode(ONBOARD_LED_PIN, OUTPUT);
-  digitalWrite(ONBOARD_LED_PIN, HIGH); // Apagado inicial
+  digitalWrite(ONBOARD_LED_PIN, HIGH);
   pinMode(FLASH_LED_PIN, OUTPUT);
-  digitalWrite(FLASH_LED_PIN, LOW);    // Flash frontal apagado
+  digitalWrite(FLASH_LED_PIN, LOW);
 
   // 1. Configurar pulsador
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -212,7 +234,6 @@ void setup() {
   SD_MMC.setPins(14, 15, 2);
   if (!SD_MMC.begin("/sdcard", true, false, 20000)) {
     Serial.println("❌ ERROR: Fallo al montar MicroSD (¿Formateada en FAT32?)");
-    // Parpadeo de error: 3 destellos rápidos continuos = ERROR SD
     blinkError(3);
     return;
   }
@@ -250,7 +271,7 @@ void setup() {
 
   setCpuFrequencyMhz(160);
 
-  // Buscar el siguiente nombre de archivo disponible (para no sobrescribir)
+  // Buscar el siguiente nombre de archivo disponible
   while (fileIndex < 9999) {
     char testPath[32];
     sprintf(testPath, "/dash_%04d.avi", fileIndex);
@@ -292,7 +313,6 @@ void setup() {
 
   if (esp_camera_init(&config) != ESP_OK) {
     Serial.println("❌ ERROR al iniciar la cámara OV2640");
-    // Parpadeo de error: 2 destellos = ERROR CÁMARA
     blinkError(2);
     return;
   }
@@ -312,6 +332,7 @@ void recordClip() {
     return;
   }
 
+  // 1. Escribir cabecera AVI completa con BITMAPINFOHEADER (224 bytes)
   writeAviHeader(aviFile, 640, 480, FRAMES_PER_CLIP, FPS);
   aviFile.seek(AVI_HEADER_SIZE);
 
@@ -340,10 +361,9 @@ void recordClip() {
     esp_camera_fb_return(fb);
     framesWritten++;
 
-    // Asentar en la SD físicamente
     aviFile.flush();
 
-    // Pequeño parpadeo indicador de actividad cada frame
+    // Pulso breve en LED rojo confirmando grabación
     digitalWrite(ONBOARD_LED_PIN, LOW);
     delay(20);
     digitalWrite(ONBOARD_LED_PIN, HIGH);
@@ -354,6 +374,7 @@ void recordClip() {
     }
   }
 
+  // Actualizar cabecera final con conteo exacto
   writeAviHeader(aviFile, 640, 480, framesWritten, FPS);
   aviFile.close();
   Serial.printf("[REC] Clip guardado: %s (%d frames)\n", filename, framesWritten);
