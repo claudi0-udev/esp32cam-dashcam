@@ -169,7 +169,7 @@ void loadConfigFile() {
   frameIntervalMs = 1000 / cfg_fps;
 }
 
-// Escribe la cabecera estándar AVI para Motion-JPEG (224 bytes)
+// Escribe la cabecera estándar AVI para Motion-JPEG (224 bytes con strf/BITMAPINFOHEADER)
 static void writeAviHeader(File &file, int width, int height, int totalFrames, int fps) {
   uint32_t currentSize = file.size();
   uint32_t moviSize = (currentSize >= AVI_HEADER_SIZE) ? (currentSize - AVI_HEADER_SIZE) : (totalFrames * 15000);
@@ -279,9 +279,8 @@ void checkStorageSpace() {
   }
 }
 
-// ================= MODO SERVIDOR WEB (DESCARGA WI-FI) =================
+// ================= MODO SERVIDOR WEB (DESCARGA WI-FI CON DESCARGA MÚLTIPLE) =================
 void handleRoot() {
-  // Reintento dinámico de montaje por si se insertó la SD después de encender
   if (!sdMounted) {
     tryMountSD();
   }
@@ -289,25 +288,44 @@ void handleRoot() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<title>Dashcam - Descarga de Videos</title>";
-  html += "<style>body{font-family:sans-serif;margin:20px;background:#f0f2f5;color:#333}";
-  html += "h1{color:#1a73e8}ul{list-style:none;padding:0}";
-  html += "li{background:white;padding:12px;margin-bottom:8px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,0.1)}";
-  html += "a.btn{background:#1a73e8;color:white;text-decoration:none;padding:8px 14px;border-radius:4px;font-weight:bold}";
-  html += ".size{color:#777;font-size:0.9em;margin-left:10px}";
+  html += "<style>";
+  html += "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:15px;background:#f4f6f9;color:#333}";
+  html += "h1{color:#1a73e8;font-size:1.4rem;margin-bottom:4px}";
+  html += ".subtitle{color:#666;font-size:0.85rem;margin-bottom:15px}";
+  html += ".toolbar{background:white;padding:10px 14px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1);margin-bottom:15px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}";
+  html += ".btn{background:#1a73e8;color:white;border:none;padding:8px 14px;border-radius:6px;font-weight:bold;cursor:pointer;text-decoration:none;font-size:0.85rem;display:inline-flex;align-items:center;gap:5px}";
+  html += ".btn:disabled{background:#9aa0a6;cursor:not-allowed}";
+  html += ".btn-outline{background:transparent;border:1px solid #1a73e8;color:#1a73e8}";
+  html += "ul{list-style:none;padding:0;margin:0}";
+  html += "li{background:white;padding:12px 14px;margin-bottom:8px;border-radius:8px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,0.06)}";
+  html += ".file-info{display:flex;align-items:center;gap:12px}";
+  html += ".file-info input[type=checkbox]{width:20px;height:20px;cursor:pointer;accent-color:#1a73e8}";
+  html += ".filename{font-weight:500;font-size:0.95rem}";
+  html += ".filesize{color:#777;font-size:0.85rem;margin-left:6px}";
+  html += ".progress-box{display:none;background:#e8f0fe;color:#1a73e8;padding:12px;border-radius:6px;margin-bottom:15px;font-weight:500;text-align:center}";
   html += ".alert{background:#ffebee;color:#c62828;padding:15px;border-radius:6px;margin-bottom:15px}";
-  html += ".retry-btn{display:inline-block;margin-top:10px;background:#d32f2f;color:white;padding:8px 16px;border-radius:4px;text-decoration:none;font-weight:bold}</style></head><body>";
-  html += "<h1>🚗 Videos Grabados</h1>";
+  html += ".retry-btn{display:inline-block;margin-top:10px;background:#d32f2f;color:white;padding:8px 16px;border-radius:4px;text-decoration:none;font-weight:bold}";
+  html += "</style></head><body>";
+  html += "<h1>🚗 ESP32-CAM Dashcam</h1>";
+  html += "<div class='subtitle'>Portal de descarga de videos</div>";
+  html += "<div id='progBox' class='progress-box'>Descargando...</div>";
 
   if (!sdMounted) {
     html += "<div class='alert'>";
     html += "<strong>⚠️ Tarjeta MicroSD no detectada.</strong><br>";
-    html += "Asegúrate de que esté insertada hasta el fondo en la ranura.<br>";
+    html += "Asegúrate de que esté insertada hasta el fondo y que hayas soltado el botón.<br>";
     html += "<a class='retry-btn' href='/'>🔄 Reintentar Detección</a>";
-    html += "</div>";
-    html += "</body></html>";
+    html += "</div></body></html>";
     server.send(200, "text/html", html);
     return;
   }
+
+  html += "<div class='toolbar'>";
+  html += "<label style='display:flex;align-items:center;gap:8px;font-size:0.9rem;cursor:pointer;'>";
+  html += "<input type='checkbox' id='selectAll' onchange='toggleSelectAll(this)' style='width:18px;height:18px;accent-color:#1a73e8;'>";
+  html += "<span>Seleccionar todos</span></label>";
+  html += "<button id='btnDownload' class='btn' onclick='downloadSelected()' disabled>⬇️ Descargar (<span id='selCount'>0</span>)</button>";
+  html += "</div>";
 
   html += "<ul>";
   File root = SD_MMC.open("/");
@@ -318,17 +336,64 @@ void handleRoot() {
     if (fname.endsWith(".avi")) {
       count++;
       float sizeMB = file.size() / (1024.0 * 1024.0);
-      html += "<li><span>📹 " + fname + " <span class='size'>(" + String(sizeMB, 2) + " MB)</span></span>";
-      html += "<a class='btn' href='/download?file=" + fname + "' download>Descargar</a></li>";
+      String cleanName = fname.startsWith("/") ? fname.substring(1) : fname;
+      html += "<li><div class='file-info'>";
+      html += "<input type='checkbox' class='file-check' value='" + cleanName + "' onchange='updateCount()'>";
+      html += "<div><span class='filename'>📹 " + cleanName + "</span>";
+      html += "<span class='filesize'>(" + String(sizeMB, 2) + " MB)</span></div></div>";
+      html += "<a class='btn btn-outline' href='/download?file=" + cleanName + "' download>Bajar</a></li>";
     }
     file = root.openNextFile();
   }
   root.close();
 
   if (count == 0) {
-    html += "<p>No hay videos guardados aún.</p>";
+    html += "<p style='color:#666;'>No hay videos guardados aún.</p>";
   }
-  html += "</ul><p style='margin-top:20px;font-size:0.85em;color:#666'>Apaga y enciende la dashcam sin mantener el botón presionado para volver a grabar.</p>";
+  html += "</ul>";
+
+  // Script para descarga por lotes (secuencial)
+  html += "<script>";
+  html += "function updateCount(){";
+  html += "  const checks=document.querySelectorAll('.file-check:checked');";
+  html += "  const count=checks.length;";
+  html += "  document.getElementById('selCount').innerText=count;";
+  html += "  document.getElementById('btnDownload').disabled=(count===0);";
+  html += "}";
+  html += "function toggleSelectAll(el){";
+  html += "  document.querySelectorAll('.file-check').forEach(c=>c.checked=el.checked);";
+  html += "  updateCount();";
+  html += "}";
+  html += "async function downloadSelected(){";
+  html += "  const checks=document.querySelectorAll('.file-check:checked');";
+  html += "  if(checks.length===0) return;";
+  html += "  const btn=document.getElementById('btnDownload');";
+  html += "  const prog=document.getElementById('progBox');";
+  html += "  btn.disabled=true;";
+  html += "  prog.style.display='block';";
+  html += "  for(let i=0; i<checks.length; i++){";
+  html += "    const fname=checks[i].value;";
+  html += "    prog.innerText='⏳ Descargando ('+(i+1)+' de '+checks.length+'): '+fname+'...';";
+  html += "    try{";
+  html += "      const res=await fetch('/download?file='+fname);";
+  html += "      const blob=await res.blob();";
+  html += "      const a=document.createElement('a');";
+  html += "      a.href=URL.createObjectURL(blob);";
+  html += "      a.download=fname;";
+  html += "      document.body.appendChild(a);";
+  html += "      a.click();";
+  html += "      a.remove();";
+  html += "      URL.revokeObjectURL(a.href);";
+  html += "    }catch(err){console.error(err);}";
+  html += "    await new Promise(r=>setTimeout(r,600));";
+  html += "  }";
+  html += "  prog.innerText='✅ ¡Descarga completada con éxito! ('+checks.length+' videos)';";
+  html += "  btn.disabled=false;";
+  html += "  setTimeout(()=>{prog.style.display='none';},4000);";
+  html += "}";
+  html += "</script>";
+
+  html += "<p style='margin-top:25px;font-size:0.85em;color:#777;'>Para volver al modo grabación, apaga y enciende la dashcam sin mantener pulsado ningún botón.</p>";
   html += "</body></html>";
   server.send(200, "text/html", html);
 }
@@ -381,10 +446,8 @@ void setup() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP("Dashcam-WiFi", "12345678");
 
-    // Pequeña espera para que si el usuario usó IO13, no interfiera con DAT3
+    // Espera para que no interfiera si se usó IO13
     delay(500);
-
-    // Intentar montar la SD
     tryMountSD();
 
     server.on("/", HTTP_GET, handleRoot);
