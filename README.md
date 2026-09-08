@@ -116,3 +116,44 @@ arduino-cli upload -p /dev/ttyUSB0 -b esp32:esp32:esp32cam
 ## 📄 Licencia
 
 Código abierto bajo licencia MIT. ¡Siéntete libre de modificarlo o adaptarlo a tus necesidades!
+
+---
+
+## ⚙️ Archivo de Configuración Personalizable (`dashcam.cfg`)
+
+Si deseas cambiar la resolución, orientación, contraste o FPS, **no necesitas volver a compilar el firmware**.
+
+Al insertar la tarjeta MicroSD por primera vez, el ESP32 creará automáticamente un archivo de texto llamado **`dashcam.cfg`** en la raíz de la tarjeta. Puedes abrirlo con cualquier editor de texto (Notepad, VSCode, etc.) en tu PC o teléfono:
+
+```ini
+# ==========================================
+#  Configuración de la ESP32-CAM Dashcam
+# ==========================================
+
+# Resolución del video: QVGA (320x240), CIF (400x296), VGA (640x480), SVGA (800x600), HD (1280x720)
+resolution=VGA
+
+# Cuadros por segundo (1 a 10). Recomendado: 3
+fps=3
+
+# Duración de cada clip en segundos (10 a 300). Recomendado: 60
+clip_duration=60
+
+# Calidad JPEG (10 = máxima calidad/archivo más grande, 63 = mínima calidad)
+quality=12
+
+# Orientación de imagen (ideal si la cámara se instala invertida en el parabrisas):
+# 0 = Normal, 1 = Invertido
+vflip=0
+hmirror=0
+
+# Ajustes de color del sensor OV2640 (-2 a 2, 0 es normal):
+brightness=0
+contrast=0
+saturation=0
+
+# Balance de blancos: 0=Auto, 1=Soleado, 2=Nublado, 3=Oficina, 4=Hogar
+wb_mode=0
+```
+
+> **Impacto térmico:** Nulo. Este archivo se lee una sola vez en el arranque (`setup()`) en menos de 10 milisegundos. Los ajustes de imagen (brillo, orientación, contraste) se aplican directamente en el procesador de señal digital (DSP) del sensor OV2640, por lo que la CPU y el módulo siguen trabajando completamente fríos.

@@ -27,18 +27,29 @@
 #define ONBOARD_LED_PIN   33    // LED rojo pequeño trasero (Activo en LOW)
 #define BUTTON_PIN        13    // Pulsador a GND para modo Wi-Fi
 
-// ================= CONFIGURACIÓN DASHCAM =================
-const int FPS = 3;                       // 3 cuadros por segundo
-const int CLIP_DURATION_SEC = 60;        // Duración de cada video (60 seg = 180 frames)
-const int FRAMES_PER_CLIP = FPS * CLIP_DURATION_SEC;
-const unsigned long FRAME_INTERVAL_MS = 1000 / FPS;
-const size_t AVI_HEADER_SIZE = 224;      // Cabecera AVI estándar con BITMAPINFOHEADER
+// ================= VALORES POR DEFECTO CONFIGURABLES =================
+int cfg_fps = 3;
+int cfg_clip_duration = 60;
+int cfg_quality = 12;
+String cfg_resolution = "VGA";
+int cfg_vflip = 0;
+int cfg_hmirror = 0;
+int cfg_brightness = 0;
+int cfg_contrast = 0;
+int cfg_saturation = 0;
+int cfg_wb_mode = 0;
+
+int videoWidth = 640;
+int videoHeight = 480;
+framesize_t cameraFrameSize = FRAMESIZE_VGA;
+int framesPerClip = 180;
+unsigned long frameIntervalMs = 333;
+const size_t AVI_HEADER_SIZE = 224;
 
 int fileIndex = 0;
 bool wifiMode = false;
 WebServer server(80);
 
-// Señal luminosa de error (parpadeo rápido en el LED rojo)
 void blinkError(int times) {
   while (true) {
     for (int i = 0; i < times; i++) {
@@ -49,6 +60,101 @@ void blinkError(int times) {
     }
     delay(1000);
   }
+}
+
+// ================= GESTIÓN DEL ARCHIVO DASHCAM.CFG =================
+void createDefaultConfigFile() {
+  File cfgFile = SD_MMC.open("/dashcam.cfg", FILE_WRITE);
+  if (!cfgFile) return;
+
+  cfgFile.println("# ==========================================");
+  cfgFile.println("#  Configuracion de la ESP32-CAM Dashcam");
+  cfgFile.println("# ==========================================");
+  cfgFile.println("# Resolucion: QVGA (320x240), CIF (400x296), VGA (640x480), SVGA (800x600), HD (1280x720)");
+  cfgFile.println("resolution=VGA");
+  cfgFile.println("");
+  cfgFile.println("# Cuadros por segundo (1 a 10). Recomendado: 3");
+  cfgFile.println("fps=3");
+  cfgFile.println("");
+  cfgFile.println("# Duracion de cada clip en segundos (10 a 300). Recomendado: 60");
+  cfgFile.println("clip_duration=60");
+  cfgFile.println("");
+  cfgFile.println("# Calidad JPEG (10 = maxima calidad, 63 = minima calidad)");
+  cfgFile.println("quality=12");
+  cfgFile.println("");
+  cfgFile.println("# Orientacion (util si montas la camara invertida en el parabrisas)");
+  cfgFile.println("# 0 = Normal, 1 = Invertido");
+  cfgFile.println("vflip=0");
+  cfgFile.println("hmirror=0");
+  cfgFile.println("");
+  cfgFile.println("# Ajustes de imagen (-2 a 2, 0 = normal)");
+  cfgFile.println("brightness=0");
+  cfgFile.println("contrast=0");
+  cfgFile.println("saturation=0");
+  cfgFile.println("");
+  cfgFile.println("# Balance de blancos: 0=Auto, 1=Soleado, 2=Nublado, 3=Oficina, 4=Hogar");
+  cfgFile.println("wb_mode=0");
+
+  cfgFile.close();
+  Serial.println("📄 Creado archivo por defecto: /dashcam.cfg");
+}
+
+void loadConfigFile() {
+  if (!SD_MMC.exists("/dashcam.cfg")) {
+    createDefaultConfigFile();
+    return;
+  }
+
+  File cfgFile = SD_MMC.open("/dashcam.cfg", FILE_READ);
+  if (!cfgFile) return;
+
+  Serial.println("⚙️ Leyendo configuracion desde /dashcam.cfg...");
+
+  while (cfgFile.available()) {
+    String line = cfgFile.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0 || line.startsWith("#") || line.startsWith(";")) continue;
+
+    int sep = line.indexOf('=');
+    if (sep == -1) continue;
+
+    String key = line.substring(0, sep);
+    String val = line.substring(sep + 1);
+    key.trim();
+    val.trim();
+
+    if (key.equalsIgnoreCase("fps")) cfg_fps = constrain(val.toInt(), 1, 15);
+    else if (key.equalsIgnoreCase("clip_duration")) cfg_clip_duration = constrain(val.toInt(), 10, 600);
+    else if (key.equalsIgnoreCase("quality")) cfg_quality = constrain(val.toInt(), 10, 63);
+    else if (key.equalsIgnoreCase("resolution")) cfg_resolution = val;
+    else if (key.equalsIgnoreCase("vflip")) cfg_vflip = val.toInt();
+    else if (key.equalsIgnoreCase("hmirror")) cfg_hmirror = val.toInt();
+    else if (key.equalsIgnoreCase("brightness")) cfg_brightness = constrain(val.toInt(), -2, 2);
+    else if (key.equalsIgnoreCase("contrast")) cfg_contrast = constrain(val.toInt(), -2, 2);
+    else if (key.equalsIgnoreCase("saturation")) cfg_saturation = constrain(val.toInt(), -2, 2);
+    else if (key.equalsIgnoreCase("wb_mode")) cfg_wb_mode = constrain(val.toInt(), 0, 4);
+  }
+  cfgFile.close();
+
+  // Asignar resolución
+  cfg_resolution.toUpperCase();
+  if (cfg_resolution == "QVGA") {
+    cameraFrameSize = FRAMESIZE_QVGA; videoWidth = 320; videoHeight = 240;
+  } else if (cfg_resolution == "CIF") {
+    cameraFrameSize = FRAMESIZE_CIF; videoWidth = 400; videoHeight = 296;
+  } else if (cfg_resolution == "SVGA") {
+    cameraFrameSize = FRAMESIZE_SVGA; videoWidth = 800; videoHeight = 600;
+  } else if (cfg_resolution == "HD") {
+    cameraFrameSize = FRAMESIZE_HD; videoWidth = 1280; videoHeight = 720;
+  } else {
+    cameraFrameSize = FRAMESIZE_VGA; videoWidth = 640; videoHeight = 480;
+  }
+
+  framesPerClip = cfg_fps * cfg_clip_duration;
+  frameIntervalMs = 1000 / cfg_fps;
+
+  Serial.printf("Configuracion aplicada: %dx%d a %d FPS, clips de %d s, vflip=%d\n",
+                videoWidth, videoHeight, cfg_fps, cfg_clip_duration, cfg_vflip);
 }
 
 // Escribe la cabecera estándar AVI para Motion-JPEG (224 bytes con strf/BITMAPINFOHEADER)
@@ -113,7 +219,7 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
   int16_t rcFrame[4] = {0, 0, (int16_t)width, (int16_t)height};
   file.write((const uint8_t*)rcFrame, 8);
   
-  // 2.2.2. strf chunk (40 bytes BITMAPINFOHEADER) - ¡Esencial para VLC y otros reproductores!
+  // 2.2.2. strf chunk (40 bytes BITMAPINFOHEADER)
   file.write((const uint8_t*)"strf", 4);
   uint32_t strfSize = 40;
   file.write((const uint8_t*)&strfSize, 4);
@@ -220,17 +326,14 @@ void setup() {
   delay(500);
   Serial.println("\n--- ESP32-CAM Dashcam Iniciando ---");
 
-  // Configuración de LEDs
   pinMode(ONBOARD_LED_PIN, OUTPUT);
   digitalWrite(ONBOARD_LED_PIN, HIGH);
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);
 
-  // 1. Configurar pulsador
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   bool requestedWifi = (digitalRead(BUTTON_PIN) == LOW);
 
-  // 2. Iniciar MicroSD en modo 1-Bit (CLK=14, CMD=15, D0=2)
   SD_MMC.setPins(14, 15, 2);
   if (!SD_MMC.begin("/sdcard", true, false, 20000)) {
     Serial.println("❌ ERROR: Fallo al montar MicroSD (¿Formateada en FAT32?)");
@@ -246,10 +349,13 @@ void setup() {
   }
   Serial.printf("✅ MicroSD detectada correctamente. Capacidad: %llu MB\n", SD_MMC.cardSize() / (1024 * 1024));
 
-  // 3. MODO WI-FI SI SE MANTUVO EL PULSADOR
+  // Cargar configuración de usuario desde /dashcam.cfg
+  loadConfigFile();
+
+  // MODO WI-FI SI SE MANTUVO EL PULSADOR
   if (requestedWifi) {
     wifiMode = true;
-    digitalWrite(ONBOARD_LED_PIN, LOW); // LED rojo encendido fijo
+    digitalWrite(ONBOARD_LED_PIN, LOW);
     Serial.println(">>> MODO WIFI ACTIVADO");
 
     WiFi.mode(WIFI_AP);
@@ -264,14 +370,14 @@ void setup() {
     return;
   }
 
-  // 4. MODO GRABACIÓN NORMAL
+  // MODO GRABACIÓN NORMAL
   wifiMode = false;
   WiFi.mode(WIFI_OFF);
   btStop();
 
   setCpuFrequencyMhz(160);
 
-  // Buscar el siguiente nombre de archivo disponible
+  // Buscar el siguiente archivo libre
   while (fileIndex < 9999) {
     char testPath[32];
     sprintf(testPath, "/dash_%04d.avi", fileIndex);
@@ -307,8 +413,8 @@ void setup() {
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   
-  config.frame_size = FRAMESIZE_VGA;
-  config.jpeg_quality = 12;
+  config.frame_size = cameraFrameSize;
+  config.jpeg_quality = cfg_quality;
   config.fb_count = 2;
 
   if (esp_camera_init(&config) != ESP_OK) {
@@ -317,7 +423,18 @@ void setup() {
     return;
   }
 
-  Serial.println("📹 Grabando clips a 3 FPS...");
+  // Aplicar ajustes finos al sensor OV2640 por hardware
+  sensor_t *s = esp_camera_sensor_get();
+  if (s != NULL) {
+    s->set_vflip(s, cfg_vflip);
+    s->set_hmirror(s, cfg_hmirror);
+    s->set_brightness(s, cfg_brightness);
+    s->set_contrast(s, cfg_contrast);
+    s->set_saturation(s, cfg_saturation);
+    s->set_wb_mode(s, cfg_wb_mode);
+  }
+
+  Serial.printf("📹 Grabando clips a %d FPS (%dx%d)...\n", cfg_fps, videoWidth, videoHeight);
 }
 
 void recordClip() {
@@ -332,14 +449,13 @@ void recordClip() {
     return;
   }
 
-  // 1. Escribir cabecera AVI completa con BITMAPINFOHEADER (224 bytes)
-  writeAviHeader(aviFile, 640, 480, FRAMES_PER_CLIP, FPS);
+  writeAviHeader(aviFile, videoWidth, videoHeight, framesPerClip, cfg_fps);
   aviFile.seek(AVI_HEADER_SIZE);
 
   int framesWritten = 0;
-  Serial.printf("[REC] Grabando: %s\n", filename);
+  Serial.printf("[REC] Grabando: %s (%d cuadros)\n", filename, framesPerClip);
 
-  for (int i = 0; i < FRAMES_PER_CLIP; i++) {
+  for (int i = 0; i < framesPerClip; i++) {
     unsigned long startMs = millis();
 
     camera_fb_t *fb = esp_camera_fb_get();
@@ -363,19 +479,17 @@ void recordClip() {
 
     aviFile.flush();
 
-    // Pulso breve en LED rojo confirmando grabación
     digitalWrite(ONBOARD_LED_PIN, LOW);
     delay(20);
     digitalWrite(ONBOARD_LED_PIN, HIGH);
 
     unsigned long elapsed = millis() - startMs;
-    if (elapsed < FRAME_INTERVAL_MS) {
-      delay(FRAME_INTERVAL_MS - elapsed);
+    if (elapsed < frameIntervalMs) {
+      delay(frameIntervalMs - elapsed);
     }
   }
 
-  // Actualizar cabecera final con conteo exacto
-  writeAviHeader(aviFile, 640, 480, framesWritten, FPS);
+  writeAviHeader(aviFile, videoWidth, videoHeight, framesWritten, cfg_fps);
   aviFile.close();
   Serial.printf("[REC] Clip guardado: %s (%d frames)\n", filename, framesWritten);
 }
