@@ -485,6 +485,65 @@ void handleDownload() {
   downloadFile.close();
 }
 
+void handleGetConfig() {
+  if (!sdMounted && !tryMountSD()) {
+    server.send(400, "application/json", "{\"error\":\"MicroSD no disponible\"}");
+    return;
+  }
+  loadConfigFile();
+  String json = "{";
+  json += "\"resolution\":\"" + cfg_resolution + "\",";
+  json += "\"fps\":" + String(cfg_fps) + ",";
+  json += "\"clip_duration\":" + String(cfg_clip_duration) + ",";
+  json += "\"quality\":" + String(cfg_quality) + ",";
+  json += "\"vflip\":" + String(cfg_vflip) + ",";
+  json += "\"hmirror\":" + String(cfg_hmirror) + ",";
+  json += "\"brightness\":" + String(cfg_brightness) + ",";
+  json += "\"contrast\":" + String(cfg_contrast) + ",";
+  json += "\"saturation\":" + String(cfg_saturation) + ",";
+  json += "\"wb_mode\":" + String(cfg_wb_mode);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleSaveConfig() {
+  if (!sdMounted && !tryMountSD()) {
+    server.send(400, "application/json", "{\"error\":\"MicroSD no disponible\"}");
+    return;
+  }
+  if (server.hasArg("fps")) cfg_fps = constrain(server.arg("fps").toInt(), 1, 15);
+  if (server.hasArg("clip_duration")) cfg_clip_duration = constrain(server.arg("clip_duration").toInt(), 10, 600);
+  if (server.hasArg("quality")) cfg_quality = constrain(server.arg("quality").toInt(), 10, 63);
+  if (server.hasArg("resolution")) cfg_resolution = server.arg("resolution");
+  if (server.hasArg("vflip")) cfg_vflip = server.arg("vflip").toInt();
+  if (server.hasArg("hmirror")) cfg_hmirror = server.arg("hmirror").toInt();
+  if (server.hasArg("brightness")) cfg_brightness = constrain(server.arg("brightness").toInt(), -2, 2);
+  if (server.hasArg("contrast")) cfg_contrast = constrain(server.arg("contrast").toInt(), -2, 2);
+  if (server.hasArg("saturation")) cfg_saturation = constrain(server.arg("saturation").toInt(), -2, 2);
+  if (server.hasArg("wb_mode")) cfg_wb_mode = constrain(server.arg("wb_mode").toInt(), 0, 4);
+
+  File cfgFile = SD_MMC.open("/dashcam.cfg", FILE_WRITE);
+  if (!cfgFile) {
+    server.send(500, "application/json", "{\"error\":\"Fallo al escribir dashcam.cfg\"}");
+    return;
+  }
+  cfgFile.println("# Configuracion ESP32-CAM Dashcam");
+  cfgFile.println("resolution=" + cfg_resolution);
+  cfgFile.println("fps=" + String(cfg_fps));
+  cfgFile.println("clip_duration=" + String(cfg_clip_duration));
+  cfgFile.println("quality=" + String(cfg_quality));
+  cfgFile.println("vflip=" + String(cfg_vflip));
+  cfgFile.println("hmirror=" + String(cfg_hmirror));
+  cfgFile.println("brightness=" + String(cfg_brightness));
+  cfgFile.println("contrast=" + String(cfg_contrast));
+  cfgFile.println("saturation=" + String(cfg_saturation));
+  cfgFile.println("wb_mode=" + String(cfg_wb_mode));
+  cfgFile.close();
+
+  Serial.println("💾 Configuracion actualizada en /dashcam.cfg desde Web/App");
+  server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Configuracion guardada correctamente\"}");
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -514,6 +573,8 @@ void setup() {
 
     server.on("/", HTTP_GET, handleRoot);
     server.on("/download", HTTP_GET, handleDownload);
+    server.on("/config", HTTP_GET, handleGetConfig);
+    server.on("/config", HTTP_POST, handleSaveConfig);
     server.begin();
 
     Serial.println("📡 Portal listo en http://192.168.4.1");
