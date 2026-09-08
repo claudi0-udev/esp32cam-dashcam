@@ -169,7 +169,7 @@ void loadConfigFile() {
   frameIntervalMs = 1000 / cfg_fps;
 }
 
-// Escribe la cabecera estándar AVI para Motion-JPEG (224 bytes con strf/BITMAPINFOHEADER)
+// Escribe la cabecera estándar AVI para Motion-JPEG (224 bytes)
 static void writeAviHeader(File &file, int width, int height, int totalFrames, int fps) {
   uint32_t currentSize = file.size();
   uint32_t moviSize = (currentSize >= AVI_HEADER_SIZE) ? (currentSize - AVI_HEADER_SIZE) : (totalFrames * 15000);
@@ -279,7 +279,7 @@ void checkStorageSpace() {
   }
 }
 
-// ================= MODO SERVIDOR WEB (DESCARGA WI-FI CON DESCARGA MÚLTIPLE) =================
+// ================= MODO SERVIDOR WEB CON DESCARGA INDIVIDUAL Y UNIFICADA =================
 void handleRoot() {
   if (!sdMounted) {
     tryMountSD();
@@ -292,17 +292,18 @@ void handleRoot() {
   html += "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:15px;background:#f4f6f9;color:#333}";
   html += "h1{color:#1a73e8;font-size:1.4rem;margin-bottom:4px}";
   html += ".subtitle{color:#666;font-size:0.85rem;margin-bottom:15px}";
-  html += ".toolbar{background:white;padding:10px 14px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1);margin-bottom:15px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}";
-  html += ".btn{background:#1a73e8;color:white;border:none;padding:8px 14px;border-radius:6px;font-weight:bold;cursor:pointer;text-decoration:none;font-size:0.85rem;display:inline-flex;align-items:center;gap:5px}";
+  html += ".toolbar{background:white;padding:12px 14px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1);margin-bottom:15px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}";
+  html += ".btn{background:#1a73e8;color:white;border:none;padding:9px 14px;border-radius:6px;font-weight:bold;cursor:pointer;text-decoration:none;font-size:0.85rem;display:inline-flex;align-items:center;gap:6px}";
+  html += ".btn-green{background:#2e7d32}";
   html += ".btn:disabled{background:#9aa0a6;cursor:not-allowed}";
-  html += ".btn-outline{background:transparent;border:1px solid #1a73e8;color:#1a73e8}";
+  html += ".btn-outline{background:transparent;border:1px solid #1a73e8;color:#1a73e8;padding:6px 12px}";
   html += "ul{list-style:none;padding:0;margin:0}";
   html += "li{background:white;padding:12px 14px;margin-bottom:8px;border-radius:8px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,0.06)}";
   html += ".file-info{display:flex;align-items:center;gap:12px}";
   html += ".file-info input[type=checkbox]{width:20px;height:20px;cursor:pointer;accent-color:#1a73e8}";
   html += ".filename{font-weight:500;font-size:0.95rem}";
   html += ".filesize{color:#777;font-size:0.85rem;margin-left:6px}";
-  html += ".progress-box{display:none;background:#e8f0fe;color:#1a73e8;padding:12px;border-radius:6px;margin-bottom:15px;font-weight:500;text-align:center}";
+  html += ".progress-box{display:none;background:#e8f0fe;color:#1a73e8;padding:12px;border-radius:6px;margin-bottom:15px;font-weight:bold;text-align:center}";
   html += ".alert{background:#ffebee;color:#c62828;padding:15px;border-radius:6px;margin-bottom:15px}";
   html += ".retry-btn{display:inline-block;margin-top:10px;background:#d32f2f;color:white;padding:8px 16px;border-radius:4px;text-decoration:none;font-weight:bold}";
   html += "</style></head><body>";
@@ -324,8 +325,10 @@ void handleRoot() {
   html += "<label style='display:flex;align-items:center;gap:8px;font-size:0.9rem;cursor:pointer;'>";
   html += "<input type='checkbox' id='selectAll' onchange='toggleSelectAll(this)' style='width:18px;height:18px;accent-color:#1a73e8;'>";
   html += "<span>Seleccionar todos</span></label>";
-  html += "<button id='btnDownload' class='btn' onclick='downloadSelected()' disabled>⬇️ Descargar (<span id='selCount'>0</span>)</button>";
-  html += "</div>";
+  html += "<div style='display:flex;gap:8px;flex-wrap:wrap;'>";
+  html += "<button id='btnMerge' class='btn btn-green' onclick='downloadMerged()' disabled>🎬 Unir en 1 video (<span class='selCount'>0</span>)</button>";
+  html += "<button id='btnDownload' class='btn' onclick='downloadSeparated()' disabled>⬇️ Separados (<span class='selCount'>0</span>)</button>";
+  html += "</div></div>";
 
   html += "<ul>";
   File root = SD_MMC.open("/");
@@ -352,24 +355,87 @@ void handleRoot() {
   }
   html += "</ul>";
 
-  // Script para descarga por lotes (secuencial)
+  // JavaScript para Ensamblado y Unión Instantánea de Videos AVI
   html += "<script>";
   html += "function updateCount(){";
   html += "  const checks=document.querySelectorAll('.file-check:checked');";
   html += "  const count=checks.length;";
-  html += "  document.getElementById('selCount').innerText=count;";
+  html += "  document.querySelectorAll('.selCount').forEach(el=>el.innerText=count);";
+  html += "  document.getElementById('btnMerge').disabled=(count===0);";
   html += "  document.getElementById('btnDownload').disabled=(count===0);";
   html += "}";
   html += "function toggleSelectAll(el){";
   html += "  document.querySelectorAll('.file-check').forEach(c=>c.checked=el.checked);";
   html += "  updateCount();";
   html += "}";
-  html += "async function downloadSelected(){";
+
+  // Generador binario de cabecera AVI estándar
+  html += "function buildAviHeader(w,h,totalFrames,fps,moviSize){";
+  html += "  const buf=new ArrayBuffer(224);";
+  html += "  const v=new DataView(buf);";
+  html += "  const str=(pos,s)=>{for(let i=0;i<s.length;i++) v.setUint8(pos+i, s.charCodeAt(i));};";
+  html += "  str(0,'RIFF'); v.setUint32(4, moviSize+224-8, true); str(8,'AVI ');";
+  html += "  str(12,'LIST'); v.setUint32(16, 192, true); str(20,'hdrl');";
+  html += "  str(24,'avih'); v.setUint32(28, 56, true);";
+  html += "  v.setUint32(32, Math.floor(1000000/fps), true);";
+  html += "  v.setUint32(44, 0x810, true); v.setUint32(48, totalFrames, true);";
+  html += "  v.setUint32(56, 1, true); v.setUint32(64, w, true); v.setUint32(68, h, true);";
+  html += "  str(88,'LIST'); v.setUint32(92, 116, true); str(96,'strl');";
+  html += "  str(100,'strh'); v.setUint32(104, 56, true); str(108,'vids'); str(112,'MJPG');";
+  html += "  v.setUint32(128, 1, true); v.setUint32(132, fps, true);";
+  html += "  v.setUint32(140, totalFrames, true); v.setInt32(148, -1, true);";
+  html += "  v.setInt16(160, w, true); v.setInt16(162, h, true);";
+  html += "  str(164,'strf'); v.setUint32(168, 40, true); v.setUint32(172, 40, true);";
+  html += "  v.setInt32(176, w, true); v.setInt32(180, h, true);";
+  html += "  v.setUint16(184, 1, true); v.setUint16(186, 24, true); str(188,'MJPG');";
+  html += "  v.setUint32(192, w*h*3, true);";
+  html += "  str(212,'LIST'); v.setUint32(216, moviSize, true); str(220,'movi');";
+  html += "  return buf;";
+  html += "}";
+
+  // Función 1: Unir y Descargar en 1 solo archivo
+  html += "async function downloadMerged(){";
+  html += "  const checks=Array.from(document.querySelectorAll('.file-check:checked'));";
+  html += "  if(checks.length===0) return;";
+  html += "  const prog=document.getElementById('progBox');";
+  html += "  prog.style.display='block';";
+  html += "  let payloads=[]; let totalFrames=0; let w=640; let h=480; let fps=3;";
+  html += "  for(let i=0; i<checks.length; i++){";
+  html += "    const fname=checks[i].value;";
+  html += "    prog.innerText='⏳ Descargando clip '+(i+1)+' de '+checks.length+': '+fname+'...';";
+  html += "    const res=await fetch('/download?file='+fname);";
+  html += "    const ab=await res.arrayBuffer();";
+  html += "    if(ab.byteLength>224){";
+  html += "      const dv=new DataView(ab);";
+  html += "      if(i===0){";
+  html += "        w=dv.getUint32(64, true);";
+  html += "        h=dv.getUint32(68, true);";
+  html += "        fps=dv.getUint32(132, true) || 3;";
+  html += "      }";
+  html += "      const fCount=dv.getUint32(48, true);";
+  html += "      totalFrames+=fCount;";
+  html += "      payloads.push(new Uint8Array(ab, 224));";
+  html += "    }";
+  html += "  }";
+  html += "  prog.innerText='⚡ Ensamblando video continuo en tu móvil...';";
+  html += "  let moviSize=4;";
+  html += "  payloads.forEach(p=>moviSize+=p.byteLength);";
+  html += "  const headerBuf=buildAviHeader(w,h,totalFrames,fps,moviSize);";
+  html += "  const finalBlob=new Blob([headerBuf, ...payloads], {type:'video/x-msvideo'});";
+  html += "  const a=document.createElement('a');";
+  html += "  a.href=URL.createObjectURL(finalBlob);";
+  html += "  a.download='viaje_completo_'+checks[0].value;";
+  html += "  document.body.appendChild(a); a.click(); a.remove();";
+  html += "  URL.revokeObjectURL(a.href);";
+  html += "  prog.innerText='✅ ¡Video unido y descargado con éxito!';";
+  html += "  setTimeout(()=>{prog.style.display='none';},4000);";
+  html += "}";
+
+  // Función 2: Descargar archivos individuales en lote
+  html += "async function downloadSeparated(){";
   html += "  const checks=document.querySelectorAll('.file-check:checked');";
   html += "  if(checks.length===0) return;";
-  html += "  const btn=document.getElementById('btnDownload');";
   html += "  const prog=document.getElementById('progBox');";
-  html += "  btn.disabled=true;";
   html += "  prog.style.display='block';";
   html += "  for(let i=0; i<checks.length; i++){";
   html += "    const fname=checks[i].value;";
@@ -380,15 +446,12 @@ void handleRoot() {
   html += "      const a=document.createElement('a');";
   html += "      a.href=URL.createObjectURL(blob);";
   html += "      a.download=fname;";
-  html += "      document.body.appendChild(a);";
-  html += "      a.click();";
-  html += "      a.remove();";
+  html += "      document.body.appendChild(a); a.click(); a.remove();";
   html += "      URL.revokeObjectURL(a.href);";
   html += "    }catch(err){console.error(err);}";
   html += "    await new Promise(r=>setTimeout(r,600));";
   html += "  }";
-  html += "  prog.innerText='✅ ¡Descarga completada con éxito! ('+checks.length+' videos)';";
-  html += "  btn.disabled=false;";
+  html += "  prog.innerText='✅ ¡Descarga completada!';";
   html += "  setTimeout(()=>{prog.style.display='none';},4000);";
   html += "}";
   html += "</script>";
@@ -440,13 +503,12 @@ void setup() {
   // ================= 1. MODO WI-FI =================
   if (requestedWifi) {
     wifiMode = true;
-    digitalWrite(ONBOARD_LED_PIN, LOW); // LED rojo fijo
+    digitalWrite(ONBOARD_LED_PIN, LOW);
 
     Serial.println("\n>>> MODO WIFI ACTIVADO");
     WiFi.mode(WIFI_AP);
     WiFi.softAP("Dashcam-WiFi", "12345678");
 
-    // Espera para que no interfiera si se usó IO13
     delay(500);
     tryMountSD();
 
