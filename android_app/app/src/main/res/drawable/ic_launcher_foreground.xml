@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Dashcam Body: Sleek dark rounded rectangle -->
+    <path
+        android:fillColor="#2C3440"
+        android:strokeColor="#4E5D78"
+        android:strokeWidth="1.5"
+        android:pathData="M 28,36 L 80,36 A 8,8 0 0,1 88,44 L 88,72 A 8,8 0 0,1 80,80 L 28,80 A 8,8 0 0,1 20,72 L 20,44 A 8,8 0 0,1 28,36 Z" />
+
+    <!-- Top Suction Mount / Bracket -->
+    <path
+        android:fillColor="#3A4659"
+        android:pathData="M 46,26 L 62,26 L 58,36 L 50,36 Z" />
+    <path
+        android:fillColor="#1A73E8"
+        android:pathData="M 44,23 L 64,23 A 3,3 0 0,1 67,26 L 41,26 A 3,3 0 0,1 44,23 Z" />
+
+    <!-- Camera Lens Outer Ring -->
+    <path
+        android:fillColor="#1A202C"
+        android:strokeColor="#1A73E8"
+        android:strokeWidth="2.5"
+        android:pathData="M 54,42 A 16,16 0 1,1 53.9,42 Z" />
+
+    <!-- Camera Lens Glass / Aperture Inner -->
+    <path
+        android:fillColor="#0D47A1"
+        android:pathData="M 54,47 A 11,11 0 1,1 53.9,47 Z" />
+
+    <!-- Lens Flare / Reflection -->
+    <path
+        android:fillColor="#64B5F6"
+        android:pathData="M 50,51 A 5,5 0 0,1 57,48 A 6,6 0 0,0 50,51 Z" />
+
+    <!-- Recording Indicator (Red Dot) -->
+    <path
+        android:fillColor="#FF1744"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1"
+        android:pathData="M 78,44 A 3.5,3.5 0 1,1 77.9,44 Z" />
+
+    <!-- Small Onboard LED Indicator (Blue / Wi-Fi) -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M 30,44 A 2.5,2.5 0 1,1 29.9,44 Z" />
+
+    <!-- Display / Speaker Grille Accent lines -->
+    <path
+        android:strokeColor="#4A5568"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M 28,68 L 36,68 M 28,72 L 34,72" />
+</vector>
