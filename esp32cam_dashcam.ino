@@ -33,23 +33,28 @@ const int FPS = 3;                       // 3 cuadros por segundo
 const int CLIP_DURATION_SEC = 60;        // Duración de cada video (60 seg = 180 frames)
 const int FRAMES_PER_CLIP = FPS * CLIP_DURATION_SEC;
 const unsigned long FRAME_INTERVAL_MS = 1000 / FPS;
+const size_t AVI_HEADER_SIZE = 176;
 
 int fileIndex = 0;
 bool wifiMode = false;
 WebServer server(80);
 
-// Escribe la cabecera estándar AVI para Motion-JPEG
+// Escribe la cabecera estándar AVI para Motion-JPEG (176 bytes)
 static void writeAviHeader(File &file, int width, int height, int totalFrames, int fps) {
-  uint32_t moviSize = file.size() - 240;
+  uint32_t currentSize = file.size();
+  uint32_t moviSize = (currentSize >= AVI_HEADER_SIZE) ? (currentSize - AVI_HEADER_SIZE) : (totalFrames * 30000);
+  uint32_t riffSize = moviSize + AVI_HEADER_SIZE - 8;
+
   file.seek(0);
   
+  // RIFF chunk
   file.write((const uint8_t*)"RIFF", 4);
-  uint32_t riffSize = 4 + 4 + 8 + 48 + 8 + 48 + 8 + 4 + moviSize;
   file.write((const uint8_t*)&riffSize, 4);
   file.write((const uint8_t*)"AVI ", 4);
   
+  // LIST hdrl
   file.write((const uint8_t*)"LIST", 4);
-  uint32_t hdrlSize = 4 + 8 + 48 + 8 + 48;
+  uint32_t hdrlSize = 4 + 8 + 56 + 8 + 4 + 8 + 56;
   file.write((const uint8_t*)&hdrlSize, 4);
   file.write((const uint8_t*)"hdrl", 4);
   
@@ -71,9 +76,9 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
   uint32_t reserved[4] = {0, 0, 0, 0};
   file.write((const uint8_t*)reserved, 16);
   
-  // strl chunk
+  // LIST strl
   file.write((const uint8_t*)"LIST", 4);
-  uint32_t strlSize = 4 + 8 + 48;
+  uint32_t strlSize = 4 + 8 + 56;
   file.write((const uint8_t*)&strlSize, 4);
   file.write((const uint8_t*)"strl", 4);
   
@@ -200,7 +205,6 @@ void setup() {
   }
 
   // 4. VERIFICAR PULSADOR EN EL ARRANQUE
-  // Si el usuario mantiene pulsado el botón al conectar la energía (leído como LOW):
   if (digitalRead(BUTTON_PIN) == LOW) {
     wifiMode = true;
     digitalWrite(ONBOARD_LED_PIN, LOW); // Enciende el LED rojo indicador
@@ -208,7 +212,6 @@ void setup() {
     Serial.println(">>> MODO WIFI ACTIVADO (DESCARGA DE ARCHIVOS)");
     Serial.println("==========================================");
 
-    // Activar Punto de Acceso WiFi (Access Point)
     WiFi.mode(WIFI_AP);
     WiFi.softAP("Dashcam-WiFi", "12345678");
 
@@ -219,11 +222,10 @@ void setup() {
     Serial.print("Conectate a la red WiFi: Dashcam-WiFi (clave: 12345678)\n");
     Serial.print("Abre en el navegador: http://");
     Serial.println(WiFi.softAPIP());
-    return; // Sale del setup y entra al modo servidor web
+    return;
   }
 
   // ================= MODO DASHCAM NORMAL (GRABACIÓN) =================
-  // Si el botón NO estaba pulsado:
   wifiMode = false;
   WiFi.mode(WIFI_OFF);
   btStop();
@@ -277,8 +279,10 @@ void recordClip() {
     return;
   }
 
-  uint8_t dummyHeader[240] = {0};
-  aviFile.write(dummyHeader, 240);
+  // 1. ESCRIBIR CABECERA AVI VÁLIDA DESDE EL SEGUNDO 0
+  // Esto protege el archivo contra cortes bruscos de energía
+  writeAviHeader(aviFile, 640, 480, FRAMES_PER_CLIP, FPS);
+  aviFile.seek(AVI_HEADER_SIZE); // Posicionar al inicio del chunk movi
 
   int framesWritten = 0;
   Serial.printf("[REC] Iniciando clip: %s\n", filename);
@@ -292,6 +296,7 @@ void recordClip() {
       continue;
     }
 
+    // Escribir chunk de imagen MJPEG: "00dc" + tamaño
     aviFile.write((const uint8_t*)"00dc", 4);
     uint32_t frameSize = fb->len;
     aviFile.write((const uint8_t*)&frameSize, 4);
@@ -305,12 +310,18 @@ void recordClip() {
     esp_camera_fb_return(fb);
     framesWritten++;
 
+    // 2. FLUSH INMEDIATO A LA MICROSD
+    // Actualiza la tabla FAT y asienta los datos en la flash en cada cuadro.
+    // Si se corta la energía de golpe, el archivo conserva todos los segundos grabados.
+    aviFile.flush();
+
     unsigned long elapsed = millis() - startMs;
     if (elapsed < FRAME_INTERVAL_MS) {
       delay(FRAME_INTERVAL_MS - elapsed);
     }
   }
 
+  // 3. ACTUALIZAR CABECERA FINAL CON EL CONTEO EXACTO DE CUADROS
   writeAviHeader(aviFile, 640, 480, framesWritten, FPS);
   aviFile.close();
   Serial.printf("[REC] Clip finalizado (%d frames guardados)\n", framesWritten);
@@ -320,7 +331,6 @@ void loop() {
   if (wifiMode) {
     server.handleClient();
   } else {
-    // Durante el funcionamiento normal, el pulsador NO hace nada
     recordClip();
   }
 }
