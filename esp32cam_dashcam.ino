@@ -4,6 +4,8 @@
 #include "WiFi.h"
 #include "WebServer.h"
 #include "esp_bt.h"
+#include <vector>
+#include <algorithm>
 
 // ================= PINES ESP32-CAM (AI-THINKER) =================
 #define PWDN_GPIO_NUM     32
@@ -253,27 +255,50 @@ static void writeAviHeader(File &file, int width, int height, int totalFrames, i
   file.write((const uint8_t*)"movi", 4);
 }
 
-// Limpieza de espacio (Loop recording)
+// Limpieza de espacio robusta (Loop recording continuo garantizado)
 void checkStorageSpace() {
   if (!sdMounted) return;
   uint64_t totalBytes = SD_MMC.totalBytes();
   uint64_t usedBytes = SD_MMC.usedBytes();
-  if (totalBytes > 0 && totalBytes > usedBytes) {
-    uint64_t freeBytes = totalBytes - usedBytes;
-    if (freeBytes < 100 * 1024 * 1024) {
-      File root = SD_MMC.open("/");
-      File file = root.openNextFile();
-      if (file) {
-        String oldestFile = file.name();
-        file.close();
-        root.close();
-        if (oldestFile.endsWith(".avi")) {
-          if (!oldestFile.startsWith("/")) oldestFile = "/" + oldestFile;
-          SD_MMC.remove(oldestFile);
-          Serial.printf("[LOOP] Borrado video antiguo: %s\n", oldestFile.c_str());
+  if (totalBytes == 0) return;
+
+  uint64_t freeBytes = (totalBytes > usedBytes) ? (totalBytes - usedBytes) : 0;
+  // Mantener siempre al menos 400 MB libres para proteger la FAT32 y evitar corrupción
+  const uint64_t MIN_FREE_BYTES = 400ULL * 1024ULL * 1024ULL;
+
+  if (freeBytes < MIN_FREE_BYTES) {
+    Serial.printf("[LOOP] Espacio libre bajo (%llu MB). Limpiando grabaciones antiguas...\n", freeBytes / (1024 * 1024));
+
+    // Recolectar todos los archivos .avi existentes
+    std::vector<String> aviList;
+    File root = SD_MMC.open("/");
+    if (root) {
+      File f = root.openNextFile();
+      while (f) {
+        String fname = f.name();
+        if (fname.endsWith(".avi")) {
+          if (!fname.startsWith("/")) fname = "/" + fname;
+          aviList.push_back(fname);
         }
-      } else {
-        root.close();
+        f = root.openNextFile();
+      }
+      root.close();
+    }
+
+    // Ordenar alfabéticamente (dash_0001 < dash_0002, o timestamp si renombra)
+    std::sort(aviList.begin(), aviList.end());
+
+    // Borrar los archivos más antiguos hasta recuperar al menos 600 MB libres
+    const uint64_t TARGET_FREE_BYTES = 600ULL * 1024ULL * 1024ULL;
+    for (size_t i = 0; i < aviList.size(); i++) {
+      String toDelete = aviList[i];
+      SD_MMC.remove(toDelete);
+      Serial.printf("[LOOP] Borrado video antiguo: %s\n", toDelete.c_str());
+
+      usedBytes = SD_MMC.usedBytes();
+      freeBytes = (totalBytes > usedBytes) ? (totalBytes - usedBytes) : 0;
+      if (freeBytes >= TARGET_FREE_BYTES) {
+        break;
       }
     }
   }
@@ -720,6 +745,15 @@ void setup() {
 void recordClip() {
   checkStorageSpace();
 
+  // Comprobar que realmente haya espacio para iniciar un nuevo clip (mínimo 100 MB libres)
+  uint64_t totalBytes = SD_MMC.totalBytes();
+  uint64_t usedBytes = SD_MMC.usedBytes();
+  if (totalBytes > 0 && (totalBytes - usedBytes) < 100ULL * 1024ULL * 1024ULL) {
+    Serial.println("⚠️ Espacio crítico insuficiente en MicroSD. Esperando loop cleanup...");
+    delay(2000);
+    return;
+  }
+
   char filename[32];
   sprintf(filename, "/dash_%04d.avi", fileIndex++);
   File aviFile = SD_MMC.open(filename, FILE_WRITE);
@@ -744,10 +778,10 @@ void recordClip() {
       continue;
     }
 
-    aviFile.write((const uint8_t*)"00dc", 4);
+    size_t w1 = aviFile.write((const uint8_t*)"00dc", 4);
     uint32_t frameSize = fb->len;
-    aviFile.write((const uint8_t*)&frameSize, 4);
-    aviFile.write(fb->buf, fb->len);
+    size_t w2 = aviFile.write((const uint8_t*)&frameSize, 4);
+    size_t w3 = aviFile.write(fb->buf, fb->len);
 
     if (frameSize % 2 != 0) {
       uint8_t zero = 0;
@@ -755,9 +789,19 @@ void recordClip() {
     }
 
     esp_camera_fb_return(fb);
+
+    // Si falló la escritura en la SD (tarjeta llena o error I/O), detener el clip para no corromper la FAT
+    if (w1 != 4 || w2 != 4 || w3 != frameSize) {
+      Serial.println("❌ Fallo en escritura física SD. Cerrando clip preventivamente...");
+      break;
+    }
+
     framesWritten++;
 
-    aviFile.flush();
+    // Flush periódico cada 30 cuadros (~10 segundos) para no estresar el controlador SD con 3 flush/seg
+    if (framesWritten % 30 == 0) {
+      aviFile.flush();
+    }
 
     digitalWrite(ONBOARD_LED_PIN, LOW);
     delay(20);
@@ -770,6 +814,7 @@ void recordClip() {
   }
 
   writeAviHeader(aviFile, videoWidth, videoHeight, framesWritten, cfg_fps);
+  aviFile.flush();
   aviFile.close();
   Serial.printf("[REC] Clip guardado: %s (%d frames)\n", filename, framesWritten);
 }
