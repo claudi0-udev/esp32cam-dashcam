@@ -4,6 +4,7 @@
 #include "WiFi.h"
 #include "WebServer.h"
 #include "esp_bt.h"
+#include <Update.h>
 #include <vector>
 #include <algorithm>
 
@@ -624,6 +625,42 @@ void handleRenameFile() {
   }
 }
 
+// Manejador de actualización de firmware por Wi-Fi (OTA)
+void handleOtaResponse() {
+  server.sendHeader("Connection", "close");
+  if (Update.hasError()) {
+    server.send(500, "application/json", "{\"status\":\"error\",\"message\":\"Fallo en la verificacion del firmware\"}");
+  } else {
+    server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Firmware actualizado. Reiniciando...\"}");
+    delay(500);
+    ESP.restart();
+  }
+}
+
+void handleOtaUpload() {
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    Serial.printf("[OTA] Iniciando actualizacion: %s\n", upload.filename.c_str());
+    // Iniciar Update con partición U_FLASH
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) { // true para indicar que el tamaño se ajusta
+      Serial.printf("[OTA] Firmware recibido con exito (%u bytes). Reiniciando...\n", upload.totalSize);
+    } else {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    Update.end();
+    Serial.println("[OTA] Actualizacion abortada");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -657,6 +694,7 @@ void setup() {
     server.on("/rename", HTTP_POST, handleRenameFile);
     server.on("/config", HTTP_GET, handleGetConfig);
     server.on("/config", HTTP_POST, handleSaveConfig);
+    server.on("/update", HTTP_POST, handleOtaResponse, handleOtaUpload);
     server.begin();
 
     Serial.println("📡 Portal listo en http://192.168.4.1");
